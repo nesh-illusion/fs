@@ -52,10 +52,10 @@ Work completed:
 - services/lucius_orchestrator/config/protocols.py
 - services/lucius_orchestrator/config/settings.py
 - docs/phase2-implementation.md
-- tests/validation/test_job_index.py
-- tests/api/test_job_lookup.py
-- tests/api/test_command_errors.py
-  - In progress: tests/validation/test_idempotency.py, tests/validation/test_schema_validator.py
+- tests/lucius_orchestrator/validation/test_job_index.py
+- tests/lucius_orchestrator/api/test_job_lookup.py
+- tests/lucius_orchestrator/api/test_command_errors.py
+  - In progress: tests/lucius_orchestrator/validation/test_idempotency.py, tests/lucius_orchestrator/validation/test_schema_validator.py
 
 ## Phase 3 — Reconciliation Service (done)
 Exit criteria:
@@ -85,7 +85,7 @@ Planned work:
   - In progress: services/ocr/app/servicebus_consumer.py, services/embedding/app/servicebus_consumer.py, services/sis/app/servicebus_consumer.py
   - In progress: services/ocr/app/idempotency_store.py, services/embedding/app/idempotency_store.py, services/sis/app/idempotency_store.py
   - In progress: retry/backoff + DLQ handling in platform Service Bus consumers
-  - In progress: services/ocr/tests/test_idempotency_store.py, services/ocr/tests/test_consumer.py
+  - In progress: tests/ocr/unit/test_idempotency_store.py, tests/ocr/unit/test_consumer.py
   - In progress: ACK/RESULT timestamp + service bus message parsing fixes
 
 Work completed:

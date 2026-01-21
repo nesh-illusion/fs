@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 from uuid import uuid4
 import zlib
@@ -41,6 +41,10 @@ def _now_iso() -> str:
 def _tenant_bucket(tenant_id: str, created_at: str) -> str:
     bucket = created_at[:7].replace("-", "")
     return f"{tenant_id}#{bucket}"
+
+
+def _lease_expires_at(minutes: int = 15) -> str:
+    return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
 
 
 def _normalize(value: str) -> str:
@@ -106,6 +110,10 @@ def _build_lucius_dispatcher(settings: AppSettings):
     return ReconciliationService(jobs_store, steps_store, outbox_store, ReconciliationConfig())
 
 
+def _find_step(steps: list[Step], step_id: str) -> Step | None:
+    return next((step for step in steps if step.step_id == step_id), None)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="LUCIUS Orchestrator")
 
@@ -114,6 +122,13 @@ def create_app() -> FastAPI:
     registry = ProtocolRegistry()
     jobs_store, steps_store, outbox_store, idempotency_store, job_index_store = _build_stores(settings)
     reconciliation = _build_lucius_dispatcher(settings)
+    app.state.jobs_store = jobs_store
+    app.state.steps_store = steps_store
+    app.state.outbox_store = outbox_store
+    app.state.idempotency_store = idempotency_store
+    app.state.job_index_store = job_index_store
+    app.state.registry = registry
+    app.state.validator = validator
 
     @app.post("/v1/commands")
     async def create_command(envelope: Dict[str, Any]):
@@ -156,6 +171,8 @@ def create_app() -> FastAPI:
         job_id = uuid4().hex
         created_at = _now_iso()
         tenant_bucket = _tenant_bucket(envelope["tenant_id"], created_at)
+        lease_id = uuid4().hex
+        lease_expires_at = _lease_expires_at()
         job = Job(
             job_id=job_id,
             tenant_id=envelope["tenant_id"],
@@ -178,7 +195,7 @@ def create_app() -> FastAPI:
             correlation_id=envelope.get("correlation_id"),
             traceparent=envelope.get("traceparent"),
         )
-        jobs_store.create_job(job)
+        job = jobs_store.create_job(job)
 
         steps = []
         for index, step in enumerate(protocol.steps):
@@ -186,6 +203,16 @@ def create_app() -> FastAPI:
                 step_payload = payload["steps"].get(step.step_id, {})
             else:
                 step_payload = payload
+            if index == 0:
+                step_state = "DISPATCHING"
+                attempt_no = 1
+                step_lease_id = lease_id
+                step_lease_expires_at = lease_expires_at
+            else:
+                step_state = "PENDING"
+                attempt_no = 0
+                step_lease_id = ""
+                step_lease_expires_at = ""
             steps.append(
                 Step(
                     job_id=job_id,
@@ -193,10 +220,10 @@ def create_app() -> FastAPI:
                     step_id=step.step_id,
                     step_type=step.step_type,
                     service=step.service,
-                    state="PENDING",
-                    attempt_no=0,
-                    lease_id="",
-                    lease_expires_at="",
+                    state=step_state,
+                    attempt_no=attempt_no,
+                    lease_id=step_lease_id,
+                    lease_expires_at=step_lease_expires_at,
                     input_ref=envelope["input_ref"],
                     workspace_ref=envelope.get("workspace_ref", {}),
                     output_ref=envelope["output_ref"],
@@ -215,7 +242,6 @@ def create_app() -> FastAPI:
             )
         steps_store.create_steps(job_id, steps)
 
-        lease_id = uuid4().hex
         outbox = OutboxEntry(
             outbox_id=uuid4().hex,
             tenant_id=envelope["tenant_id"],
@@ -255,6 +281,10 @@ def create_app() -> FastAPI:
         )
         outbox_store.create_outbox(outbox)
 
+        job.state = "DISPATCHING"
+        job.updated_at = _now_iso()
+        job = jobs_store.update_job(job, job.etag or "")
+
         idempotency_store.put(
             JobIdempotency(
                 tenant_id=envelope["tenant_id"],
@@ -273,6 +303,99 @@ def create_app() -> FastAPI:
         )
 
         return JSONResponse(status_code=202, content={"jobId": job_id})
+
+    @app.post("/v1/callbacks/ack")
+    async def ack_callback(payload: Dict[str, Any]):
+        job_id = payload.get("jobId")
+        step_id = payload.get("stepId")
+        tenant_id = payload.get("tenant_id")
+        attempt_no = payload.get("attempt_no")
+        lease_id = payload.get("lease_id")
+        if not all([job_id, step_id, tenant_id, attempt_no, lease_id]):
+            raise HTTPException(status_code=400, detail="missing required fields")
+
+        index = job_index_store.get(job_id)
+        if index is None or index.tenant_id != tenant_id:
+            raise HTTPException(status_code=404, detail="job not found")
+        job = jobs_store.get_job(job_id, tenant_id, index.tenant_bucket)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        step = _find_step(steps_store.get_steps(job_id), step_id)
+        if step is None:
+            raise HTTPException(status_code=404, detail="step not found")
+        if step.attempt_no != attempt_no or step.lease_id != lease_id:
+            raise HTTPException(status_code=409, detail="attempt/lease mismatch")
+        if step.state != "AWAITING_ACK":
+            raise HTTPException(status_code=409, detail="invalid step state")
+
+        step.state = "IN_PROGRESS"
+        step.updated_at = _now_iso()
+        steps_store.update_step(step, step.etag or "")
+
+        if job.state in {"QUEUED", "DISPATCHING"}:
+            job.state = "IN_PROGRESS"
+            job.updated_at = _now_iso()
+            jobs_store.update_job(job, job.etag or "")
+
+        return {"status": "ok"}
+
+    @app.post("/v1/callbacks/result")
+    async def result_callback(payload: Dict[str, Any]):
+        job_id = payload.get("jobId")
+        step_id = payload.get("stepId")
+        tenant_id = payload.get("tenant_id")
+        attempt_no = payload.get("attempt_no")
+        lease_id = payload.get("lease_id")
+        status = payload.get("status")
+        failure_class = payload.get("failure_class")
+        error = payload.get("error") or {}
+        if not all([job_id, step_id, tenant_id, attempt_no, lease_id, status]):
+            raise HTTPException(status_code=400, detail="missing required fields")
+
+        index = job_index_store.get(job_id)
+        if index is None or index.tenant_id != tenant_id:
+            raise HTTPException(status_code=404, detail="job not found")
+        job = jobs_store.get_job(job_id, tenant_id, index.tenant_bucket)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        steps = steps_store.get_steps(job_id)
+        step = _find_step(steps, step_id)
+        if step is None:
+            raise HTTPException(status_code=404, detail="step not found")
+        if step.attempt_no != attempt_no or step.lease_id != lease_id:
+            raise HTTPException(status_code=409, detail="attempt/lease mismatch")
+        if step.state != "IN_PROGRESS":
+            raise HTTPException(status_code=409, detail="invalid step state")
+
+        now = _now_iso()
+        step.updated_at = now
+        if status == "SUCCEEDED":
+            step.state = "SUCCEEDED"
+            step.completed_at = now
+        elif status == "FAILED" and failure_class == "RETRYABLE":
+            step.state = "FAILED_RETRY"
+        else:
+            step.state = "FAILED_FINAL"
+        step.last_error_code = error.get("code")
+        step.last_error_message = error.get("message")
+        steps_store.update_step(step, step.etag or "")
+
+        if step.state == "SUCCEEDED" and step.step_index == len(steps) - 1:
+            job.state = "SUCCEEDED"
+            job.updated_at = now
+            job.completed_at = now
+            jobs_store.update_job(job, job.etag or "")
+        elif step.state == "FAILED_FINAL":
+            job.state = "FAILED_FINAL"
+            job.updated_at = now
+            job.completed_at = now
+            job.error_code = step.last_error_code
+            job.error_message = step.last_error_message
+            jobs_store.update_job(job, job.etag or "")
+
+        return {"status": "ok"}
 
     @app.get("/v1/jobs/{job_id}")
     async def get_job(job_id: str, tenant_id: str, tenant_bucket: str | None = None):

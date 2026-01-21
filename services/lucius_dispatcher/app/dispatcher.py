@@ -12,6 +12,19 @@ class OutboxDispatcher:
         self._outbox_store = outbox_store
         self._steps_store = steps_store
 
+    def _mark_step_awaiting_ack(self, entry: OutboxEntry) -> None:
+        steps = self._steps_store.get_steps(entry.job_id)
+        step = next((item for item in steps if item.step_id == entry.step_id), None)
+        if step is None:
+            return
+        if step.state != "DISPATCHING":
+            return
+        if step.attempt_no != entry.attempt_no or step.lease_id != entry.lease_id:
+            return
+        step.state = "AWAITING_ACK"
+        step.updated_at = now_iso()
+        self._steps_store.update_step(step, step.etag or "")
+
     def dispatch_once(
         self,
         partition_key: str,
@@ -22,6 +35,7 @@ class OutboxDispatcher:
         for entry in self._outbox_store.list_pending(partition_key, limit):
             publish.publish(entry)
             updated = self._outbox_store.mark_sent(entry.outbox_id, partition_key, entry.etag or "")
+            self._mark_step_awaiting_ack(updated)
             sent.append(updated)
         return sent
 
