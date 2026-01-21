@@ -76,7 +76,11 @@ class MemoryOutboxStore(OutboxStore):
         return entry
 
     def list_pending(self, partition_key: str, limit: int) -> List[OutboxEntry]:
-        pending = [entry for entry in self._entries.values() if entry.state == "PENDING"]
+        pending = [
+            entry
+            for entry in self._entries.values()
+            if entry.state == "PENDING" and entry.tenant_bucket == partition_key
+        ]
         return pending[:limit]
 
     def mark_sent(self, outbox_id: str, partition_key: str, etag: str) -> OutboxEntry:

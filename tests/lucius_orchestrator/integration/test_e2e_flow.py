@@ -33,10 +33,15 @@ def _create_command(client: TestClient, callback_urls: dict) -> str:
 
 
 def _dispatch_once(app, job_id: str):
-    index = app.state.job_index_store.get(job_id)
+    entries = [
+        entry for entry in app.state.outbox_store._entries.values()
+        if entry.job_id == job_id
+    ]
+    assert entries
+    partition_key = entries[0].tenant_bucket
     dispatcher = OutboxDispatcher(app.state.outbox_store, app.state.steps_store)
     publisher = _CapturePublisher()
-    dispatcher.dispatch_once(index.tenant_bucket, 10, publisher)
+    dispatcher.dispatch_once(partition_key, 10, publisher)
     assert publisher.published
     return publisher.published[0]
 

@@ -33,13 +33,14 @@ def _create_command(client: TestClient, payload: dict) -> str:
 
 
 def _dispatch_once(app, job_id: str):
-    index = app.state.job_index_store.get(job_id)
-    dispatcher = OutboxDispatcher(app.state.outbox_store, app.state.steps_store)
-    dispatcher.dispatch_once(index.tenant_bucket, 10, NoopPublisher())
     entries = [
         entry for entry in app.state.outbox_store._entries.values()
         if entry.job_id == job_id
     ]
+    assert entries
+    partition_key = entries[0].tenant_bucket
+    dispatcher = OutboxDispatcher(app.state.outbox_store, app.state.steps_store)
+    dispatcher.dispatch_once(partition_key, 10, NoopPublisher())
     assert len(entries) == 1
     return entries[0]
 

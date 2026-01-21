@@ -53,3 +53,5 @@ docker build -t lucius/lucius_dispatcher:local -f services/lucius_dispatcher/Doc
 docker run --rm -e LUCIUS_STORAGE_BACKEND=memory lucius/lucius_dispatcher:local \
   lucius-reconciliation loop --partition t1#202401 --interval 5
 ```
+
+TODO: Replace fixed shard ranges with HA lease-based partition ownership (Table Storage) to enable failover.

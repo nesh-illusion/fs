@@ -277,10 +277,11 @@ def create_app() -> FastAPI:
                 )
             steps_store.create_steps(job_id, steps)
 
+            outbox_partition = f"p{routing['lane']}"
             outbox = OutboxEntry(
                 outbox_id=uuid4().hex,
                 tenant_id=envelope["tenant_id"],
-                tenant_bucket=tenant_bucket,
+                tenant_bucket=outbox_partition,
                 job_id=job_id,
                 step_id=protocol.steps[0].step_id,
                 attempt_no=1,
