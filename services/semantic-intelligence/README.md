@@ -2,4 +2,4 @@
 
 This service consumes LUCIUS directives, ACKs pickup, executes SIS, and posts RESULT.
 
-Replace `execute()` in `app/consumer.py` with SIS logic.
+Replace `execute()` in `src/consumer/__init__.py` with SIS logic.

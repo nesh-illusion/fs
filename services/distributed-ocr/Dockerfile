@@ -4,8 +4,8 @@ WORKDIR /app
 COPY services/distributed-ocr/pyproject.toml /app/
 COPY services/shared /app/shared
 RUN pip install --no-cache-dir .
-COPY services/distributed-ocr/app /app/app
+COPY services/distributed-ocr/src /app/src
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app/src:/app/shared
 
 CMD ["lucius-ocr"]

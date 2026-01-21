@@ -1,8 +1,8 @@
 from typing import List
 
-from app import consumer
-from app.directive_model import Directive
-from app.idempotency_store import MemoryIdempotencyStore
+import consumer
+from models.directive_model import Directive
+from idempotency.store import MemoryIdempotencyStore
 
 
 def _payload() -> dict:

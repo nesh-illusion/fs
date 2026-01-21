@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from lucius_dispatcher.app.dispatcher import OutboxDispatcher
+from worker.dispatcher import OutboxDispatcher
 from ledger.memory_store import MemoryOutboxStore, MemoryStepsStore
 from ledger.models import OutboxEntry, Step
 

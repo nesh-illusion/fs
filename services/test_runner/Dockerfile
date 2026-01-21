@@ -5,6 +5,6 @@ COPY . /app
 
 RUN pip install --no-cache-dir pytest fastapi jsonschema httpx requests
 
-ENV PYTHONPATH=/app/services:/app/services/distributed-ocr:/app/services/vector-ingestion:/app/services/semantic-intelligence:/app/services/lucius-orchestrator/src:/app/services/lucius-dispatcher/src
+ENV PYTHONPATH=/app/services:/app/services/lucius-orchestrator/src:/app/services/lucius-dispatcher/src:/app/services/distributed-ocr/src:/app/services/vector-ingestion/src:/app/services/semantic-intelligence/src
 
 CMD ["pytest", "-q", "-p", "no:cacheprovider", "services/lucius-orchestrator/tests/integration"]

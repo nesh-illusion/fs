@@ -10,4 +10,4 @@ dependencies = [
 ]
 
 [project.scripts]
-lucius-sis = "app.main:main"
+lucius-sis = "consumer.main:main"

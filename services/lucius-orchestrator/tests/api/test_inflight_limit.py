@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from lucius_dispatcher.app.dispatcher import OutboxDispatcher
-from lucius_dispatcher.app.publisher import NoopPublisher
+from worker.dispatcher import OutboxDispatcher
+from worker.publisher import NoopPublisher
 from api.app import create_app
 
 

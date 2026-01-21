@@ -67,9 +67,9 @@ Planned work:
 - ACK sweeper moves AWAITING_ACK -> FAILED_RETRY
 - Lease sweeper moves IN_PROGRESS -> FAILED_RETRY or FAILED_FINAL
 - Drift sweeper fixes stuck DISPATCHING/OUTBOX
-  - In progress: services/lucius-dispatcher/src/lucius_dispatcher/app/dispatcher.py, services/lucius-dispatcher/src/lucius_dispatcher/app/sweepers.py, services/lucius-dispatcher/src/lucius_dispatcher/app/service.py
-  - In progress: services/lucius-dispatcher/src/lucius_dispatcher/app/runner.py, services/lucius-dispatcher/src/lucius_dispatcher/app/publisher.py, admin endpoints in services/lucius-orchestrator/src/api/app.py, services/lucius-orchestrator/src/config/settings.py
-  - In progress: services/lucius-dispatcher/src/lucius_dispatcher/*
+  - In progress: services/lucius-dispatcher/src/worker/dispatcher.py, services/lucius-dispatcher/src/worker/sweepers.py, services/lucius-dispatcher/src/worker/service.py
+  - In progress: services/lucius-dispatcher/src/worker/runner.py, services/lucius-dispatcher/src/worker/publisher.py, admin endpoints in services/lucius-orchestrator/src/api/app.py, services/lucius-orchestrator/src/config/settings.py
+  - In progress: services/lucius-dispatcher/src/*
 
 ## Phase 4 — Bus + Platform Skeleton (done)
 Exit criteria:
@@ -80,10 +80,10 @@ Planned work:
 - Define bus conventions (topics/partitions)
 - Provide platform skeleton template
   - In progress: docs/phase4-platform-skeleton.md
-  - In progress: services/distributed-ocr/app/*, services/vector-ingestion/app/*, services/semantic-intelligence/app/*
+  - In progress: services/distributed-ocr/src/*, services/vector-ingestion/src/*, services/semantic-intelligence/src/*
   - In progress: services/distributed-ocr/pyproject.toml, services/vector-ingestion/pyproject.toml, services/semantic-intelligence/pyproject.toml
-  - In progress: services/distributed-ocr/app/servicebus_consumer.py, services/vector-ingestion/app/servicebus_consumer.py, services/semantic-intelligence/app/servicebus_consumer.py
-  - In progress: services/distributed-ocr/app/idempotency_store.py, services/vector-ingestion/app/idempotency_store.py, services/semantic-intelligence/app/idempotency_store.py
+  - In progress: services/distributed-ocr/src/consumer/servicebus_consumer.py, services/vector-ingestion/src/consumer/servicebus_consumer.py, services/semantic-intelligence/src/consumer/servicebus_consumer.py
+  - In progress: services/distributed-ocr/src/idempotency/store.py, services/vector-ingestion/src/idempotency/store.py, services/semantic-intelligence/src/idempotency/store.py
   - In progress: retry/backoff + DLQ handling in platform Service Bus consumers
   - In progress: services/distributed-ocr/tests/unit/test_idempotency_store.py, services/distributed-ocr/tests/unit/test_consumer.py
   - In progress: ACK/RESULT timestamp + service bus message parsing fixes

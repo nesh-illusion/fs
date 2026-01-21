@@ -1,8 +1,8 @@
 import os
 import pytest
 
-from app.idempotency_store import MemoryIdempotencyStore, build_idempotency_store
-from app.directive_model import Directive
+from idempotency.store import MemoryIdempotencyStore, build_idempotency_store
+from models.directive_model import Directive
 
 
 def _directive() -> Directive:

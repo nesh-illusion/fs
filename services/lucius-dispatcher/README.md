@@ -3,12 +3,12 @@
 Standalone deployable for the LUCIUS dispatcher + sweepers (historically named reconciliation). It publishes outbox directives and performs retry/cleanup sweeps.
 
 ## Components
-- `app/runner.py`: CLI entrypoint for dispatch/sweep/loop.
-- `app/service.py`: dispatcher/sweeper orchestration and config.
-- `app/dispatcher.py`: loads outbox entries and publishes directives.
-- `app/publisher.py`: Service Bus publisher or noop in memory mode.
-- `app/sweepers.py`: ACK/lease/drift sweeps and retry transitions.
-- `app/stores.py`: builds memory/table stores using orchestrator ledger interfaces.
+- `worker/runner.py`: CLI entrypoint for dispatch/sweep/loop.
+- `worker/service.py`: dispatcher/sweeper orchestration and config.
+- `worker/dispatcher.py`: loads outbox entries and publishes directives.
+- `worker/publisher.py`: Service Bus publisher or noop in memory mode.
+- `worker/sweepers.py`: ACK/lease/drift sweeps and retry transitions.
+- `store/stores.py`: builds memory/table stores using orchestrator ledger interfaces.
 
 ## Flow
 1) Load settings and build stores.

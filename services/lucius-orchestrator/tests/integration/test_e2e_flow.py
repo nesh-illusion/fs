@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from lucius_dispatcher.app.dispatcher import OutboxDispatcher
-from app import consumer
+from worker.dispatcher import OutboxDispatcher
+import consumer
 
 
 class _CapturePublisher:

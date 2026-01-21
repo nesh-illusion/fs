@@ -27,8 +27,8 @@ from ledger.table_storage import (
 )
 from validation.idempotency import idempotency_hash
 from validation.validator import SchemaValidator
-from lucius_dispatcher.app.service import ReconciliationConfig, ReconciliationService
-from lucius_dispatcher.app.stores import build_stores as build_recon_stores
+from worker.service import ReconciliationConfig, ReconciliationService
+from store.stores import build_stores as build_recon_stores
 from shared.logging import get_logger, log_event
 
 try:
@@ -530,12 +530,12 @@ def create_app() -> FastAPI:
             _require_admin(x_admin_key)
             reconciliation._config.outbox_batch_size = limit
             if settings.admin_publish_enabled:
-                from lucius_dispatcher.app.publisher import ServiceBusPublisher
+                from worker.publisher import ServiceBusPublisher
                 if not settings.service_bus_connection:
                     raise HTTPException(status_code=500, detail="missing service bus connection")
                 publisher = ServiceBusPublisher(settings.service_bus_connection)
             else:
-                from lucius_dispatcher.app.publisher import NoopPublisher
+                from worker.publisher import NoopPublisher
                 publisher = NoopPublisher()
             reconciliation.dispatch_partition(partition_key, publisher)
             return {"status": "ok"}

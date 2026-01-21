@@ -2,4 +2,4 @@
 
 This service consumes LUCIUS directives, ACKs pickup, executes OCR, and posts RESULT.
 
-Replace `execute()` in `app/consumer.py` with OCR logic.
+Replace `execute()` in `src/consumer/__init__.py` with OCR logic.

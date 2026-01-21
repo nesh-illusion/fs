@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [project.scripts]
-lucius-reconciliation = "lucius_dispatcher.app.main:main"
+lucius-reconciliation = "worker.main:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

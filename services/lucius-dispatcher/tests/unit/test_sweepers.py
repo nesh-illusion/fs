@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from lucius_dispatcher.app.sweepers import AckSweeper, JobDriftSweeper, LeaseSweeper
+from worker.sweepers import AckSweeper, JobDriftSweeper, LeaseSweeper
 from ledger.memory_store import MemoryJobsStore, MemoryStepsStore
 from ledger.models import Job, Step
 

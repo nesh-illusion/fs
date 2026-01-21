@@ -10,4 +10,4 @@ dependencies = [
 ]
 
 [project.scripts]
-lucius-ocr = "app.main:main"
+lucius-ocr = "consumer.main:main"
