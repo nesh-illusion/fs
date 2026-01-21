@@ -37,6 +37,15 @@ Example (module path assumes `PYTHONPATH=services`):
 lucius-reconciliation loop --partition t1#202401 --interval 5
 ```
 
+## Tests
+If pytest cannot find a writable temp directory, set `TMPDIR`:
+```
+TMPDIR=/var/folders/pv/bj3hzlgn76zdqhhgcnwbpk8m0000gn/T \
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=services/ocr:services:tests \
+pytest -q -p no:cacheprovider tests/lucius_dispatcher/unit
+```
+
 ## Docker
 Build and run:
 ```

@@ -43,6 +43,16 @@ Example (module path assumes `PYTHONPATH=services`):
 uvicorn lucius_orchestrator.api.app:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
+## Tests
+If pytest cannot find a writable temp directory, set `TMPDIR`:
+```
+TMPDIR=/var/folders/pv/bj3hzlgn76zdqhhgcnwbpk8m0000gn/T \
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=services/ocr:services:tests \
+pytest -q -p no:cacheprovider tests/lucius_orchestrator/api \
+  tests/lucius_orchestrator/validation tests/lucius_orchestrator/integration
+```
+
 ## Docker
 Build and run:
 ```
