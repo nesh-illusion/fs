@@ -1,7 +1,7 @@
 from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
-from .interfaces import IdempotencyStore, JobIndexStore, JobsStore, OutboxStore, StepsStore
+from .interfaces import IdempotencyStore, JobIndexStore, JobsStore, OutboxStore, StepsStore, TenantInflightStore
 from .models import Job, JobIdempotency, JobIndex, OutboxEntry, Step
 
 try:
@@ -353,3 +353,57 @@ class TableJobIndexStore(JobIndexStore):
             tenant_bucket=entity["tenant_bucket"],
             created_at=entity["created_at"],
         )
+
+
+class TableTenantInflightStore(TenantInflightStore):
+    def __init__(self, service_client: TableServiceClient, table_name: str) -> None:
+        _require_sdk()
+        self._table = service_client.get_table_client(table_name)
+
+    def try_acquire(self, tenant_id: str, limit: int) -> bool:
+        for _ in range(5):
+            try:
+                entity = self._table.get_entity(partition_key=tenant_id, row_key="inflight")
+                count = int(entity.get("count", 0))
+                etag = entity.get("etag") or entity.get("odata.etag")
+            except Exception:
+                count = 0
+                etag = None
+                entity = {
+                    "PartitionKey": tenant_id,
+                    "RowKey": "inflight",
+                    "count": 0,
+                }
+
+            if count >= limit:
+                return False
+
+            entity["count"] = count + 1
+            try:
+                if etag:
+                    self._table.update_entity(entity, mode=UpdateMode.REPLACE, etag=etag)
+                else:
+                    self._table.create_entity(entity)
+                return True
+            except Exception:
+                continue
+        raise TableStorageError("failed to acquire inflight slot after retries")
+
+    def release(self, tenant_id: str) -> None:
+        for _ in range(5):
+            try:
+                entity = self._table.get_entity(partition_key=tenant_id, row_key="inflight")
+            except Exception:
+                return
+            count = int(entity.get("count", 0))
+            etag = entity.get("etag") or entity.get("odata.etag")
+            if count <= 1:
+                entity["count"] = 0
+            else:
+                entity["count"] = count - 1
+            try:
+                self._table.update_entity(entity, mode=UpdateMode.REPLACE, etag=etag)
+                return
+            except Exception:
+                continue
+        raise TableStorageError("failed to release inflight slot after retries")

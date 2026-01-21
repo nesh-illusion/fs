@@ -1,7 +1,7 @@
 from dataclasses import replace
 from typing import Dict, List, Optional
 
-from .interfaces import IdempotencyStore, JobIndexStore, JobsStore, OutboxStore, StepsStore
+from .interfaces import IdempotencyStore, JobIndexStore, JobsStore, OutboxStore, StepsStore, TenantInflightStore
 from .models import Job, JobIdempotency, JobIndex, OutboxEntry, Step
 
 
@@ -109,3 +109,22 @@ class MemoryJobIndexStore(JobIndexStore):
 
     def get(self, job_id: str) -> Optional[JobIndex]:
         return self._records.get(job_id)
+
+
+class MemoryTenantInflightStore(TenantInflightStore):
+    def __init__(self) -> None:
+        self._counts: Dict[str, int] = {}
+
+    def try_acquire(self, tenant_id: str, limit: int) -> bool:
+        count = self._counts.get(tenant_id, 0)
+        if count >= limit:
+            return False
+        self._counts[tenant_id] = count + 1
+        return True
+
+    def release(self, tenant_id: str) -> None:
+        count = self._counts.get(tenant_id, 0)
+        if count <= 1:
+            self._counts.pop(tenant_id, None)
+            return
+        self._counts[tenant_id] = count - 1

@@ -16,6 +16,8 @@ class AppSettings:
     admin_api_key: Optional[str] = None
     admin_publish_enabled: bool = False
     service_bus_connection: Optional[str] = None
+    max_inflight_per_tenant: int = 100
+    inflight_table: str = "tenant-inflight"
 
     @classmethod
     def from_env(cls) -> "AppSettings":
@@ -31,4 +33,6 @@ class AppSettings:
             admin_api_key=os.getenv("LUCIUS_ADMIN_API_KEY"),
             admin_publish_enabled=os.getenv("LUCIUS_ADMIN_PUBLISH", "false").lower() == "true",
             service_bus_connection=os.getenv("LUCIUS_SERVICEBUS_CONNECTION"),
+            max_inflight_per_tenant=int(os.getenv("LUCIUS_MAX_INFLIGHT_PER_TENANT", "100")),
+            inflight_table=os.getenv("LUCIUS_INFLIGHT_TABLE", "tenant-inflight"),
         )

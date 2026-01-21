@@ -5,6 +5,7 @@ from lucius_orchestrator.ledger.memory_store import (
     MemoryJobsStore,
     MemoryOutboxStore,
     MemoryStepsStore,
+    MemoryTenantInflightStore,
 )
 from lucius_orchestrator.ledger.table_storage import (
     TableIdempotencyStore,
@@ -12,6 +13,7 @@ from lucius_orchestrator.ledger.table_storage import (
     TableJobsStore,
     TableOutboxStore,
     TableStepsStore,
+    TableTenantInflightStore,
 )
 
 
@@ -23,6 +25,7 @@ def build_stores(settings: AppSettings):
             MemoryOutboxStore(),
             MemoryIdempotencyStore(),
             MemoryJobIndexStore(),
+            MemoryTenantInflightStore(),
         )
 
     if settings.storage_backend != "table":
@@ -40,4 +43,5 @@ def build_stores(settings: AppSettings):
         TableOutboxStore(service_client, settings.outbox_table),
         TableIdempotencyStore(service_client, settings.idempotency_table),
         TableJobIndexStore(service_client, settings.job_index_table),
+        TableTenantInflightStore(service_client, settings.inflight_table),
     )

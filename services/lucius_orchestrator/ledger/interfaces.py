@@ -56,3 +56,11 @@ class JobIndexStore(Protocol):
 
     def get(self, job_id: str) -> Optional[JobIndex]:
         ...
+
+
+class TenantInflightStore(Protocol):
+    def try_acquire(self, tenant_id: str, limit: int) -> bool:
+        ...
+
+    def release(self, tenant_id: str) -> None:
+        ...

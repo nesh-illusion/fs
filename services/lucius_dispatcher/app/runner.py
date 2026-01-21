@@ -16,7 +16,7 @@ def _publisher(settings: AppSettings):
 
 def _build_service() -> ReconciliationService:
     settings = AppSettings.from_env()
-    jobs_store, steps_store, outbox_store, _, _ = build_stores(settings)
+    jobs_store, steps_store, outbox_store, _, _, _ = build_stores(settings)
     config = ReconciliationConfig()
     return ReconciliationService(jobs_store, steps_store, outbox_store, config)
 

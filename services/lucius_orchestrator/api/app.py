@@ -14,6 +14,7 @@ from lucius_orchestrator.ledger.memory_store import (
     MemoryJobsStore,
     MemoryOutboxStore,
     MemoryStepsStore,
+    MemoryTenantInflightStore,
 )
 from lucius_orchestrator.ledger.models import Job, JobIdempotency, JobIndex, OutboxEntry, Step
 from lucius_orchestrator.ledger.table_storage import (
@@ -22,6 +23,7 @@ from lucius_orchestrator.ledger.table_storage import (
     TableJobsStore,
     TableOutboxStore,
     TableStepsStore,
+    TableTenantInflightStore,
 )
 from lucius_orchestrator.validation.idempotency import idempotency_hash
 from lucius_orchestrator.validation.validator import SchemaValidator
@@ -86,6 +88,7 @@ def _build_stores(settings: AppSettings):
             MemoryOutboxStore(),
             MemoryIdempotencyStore(),
             MemoryJobIndexStore(),
+            MemoryTenantInflightStore(),
         )
 
     if settings.storage_backend != "table":
@@ -103,11 +106,12 @@ def _build_stores(settings: AppSettings):
         TableOutboxStore(service_client, settings.outbox_table),
         TableIdempotencyStore(service_client, settings.idempotency_table),
         TableJobIndexStore(service_client, settings.job_index_table),
+        TableTenantInflightStore(service_client, settings.inflight_table),
     )
 
 
 def _build_lucius_dispatcher(settings: AppSettings):
-    jobs_store, steps_store, outbox_store, _, _ = build_recon_stores(settings)
+    jobs_store, steps_store, outbox_store, _, _, _ = build_recon_stores(settings)
     return ReconciliationService(jobs_store, steps_store, outbox_store, ReconciliationConfig())
 
 
@@ -122,13 +126,14 @@ def create_app() -> FastAPI:
     settings = AppSettings.from_env()
     validator = SchemaValidator()
     registry = ProtocolRegistry()
-    jobs_store, steps_store, outbox_store, idempotency_store, job_index_store = _build_stores(settings)
+    jobs_store, steps_store, outbox_store, idempotency_store, job_index_store, inflight_store = _build_stores(settings)
     reconciliation = _build_lucius_dispatcher(settings)
     app.state.jobs_store = jobs_store
     app.state.steps_store = steps_store
     app.state.outbox_store = outbox_store
     app.state.idempotency_store = idempotency_store
     app.state.job_index_store = job_index_store
+    app.state.inflight_store = inflight_store
     app.state.registry = registry
     app.state.validator = validator
 
@@ -177,161 +182,176 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             raise
 
-        routing = _routing_decision(envelope)
-        log_event(
-            logger,
-            "routing.resolved",
-            tenant_id=envelope["tenant_id"],
-            resolved_mode=routing["resolved_mode"],
-            lane=routing["lane"],
-            routing_key_used=routing["routing_key_used"],
-        )
-        job_id = uuid4().hex
-        created_at = _now_iso()
-        tenant_bucket = _tenant_bucket(envelope["tenant_id"], created_at)
-        lease_id = uuid4().hex
-        lease_expires_at = _lease_expires_at()
-        job = Job(
-            job_id=job_id,
-            tenant_id=envelope["tenant_id"],
-            tenant_bucket=tenant_bucket,
-            request_type=request_type,
-            doc_id=envelope.get("doc_id"),
-            protocol_id=protocol.protocol_id,
-            mode=routing["resolved_mode"],
-            state="QUEUED",
-            idempotency_key=envelope.get("idempotency_key"),
-            idempotency_hash=digest,
-            current_step_id=protocol.steps[0].step_id,
-            current_step_index=0,
-            attempts_total=0,
-            created_at=created_at,
-            updated_at=created_at,
-            completed_at=None,
-            error_code=None,
-            error_message=None,
-            correlation_id=envelope.get("correlation_id"),
-            traceparent=envelope.get("traceparent"),
-        )
-        job = jobs_store.create_job(job)
-
-        steps = []
-        for index, step in enumerate(protocol.steps):
-            if isinstance(payload, dict) and "steps" in payload:
-                step_payload = payload["steps"].get(step.step_id, {})
-            else:
-                step_payload = payload
-            if index == 0:
-                step_state = "DISPATCHING"
-                attempt_no = 1
-                step_lease_id = lease_id
-                step_lease_expires_at = lease_expires_at
-            else:
-                step_state = "PENDING"
-                attempt_no = 0
-                step_lease_id = ""
-                step_lease_expires_at = ""
-            steps.append(
-                Step(
-                    job_id=job_id,
-                    step_index=index,
-                    step_id=step.step_id,
-                    step_type=step.step_type,
-                    service=step.service,
-                    state=step_state,
-                    attempt_no=attempt_no,
-                    lease_id=step_lease_id,
-                    lease_expires_at=step_lease_expires_at,
-                    input_ref=envelope["input_ref"],
-                    workspace_ref=envelope.get("workspace_ref", {}),
-                    output_ref=envelope["output_ref"],
-                    payload=step_payload,
-                    resolved_mode=routing["resolved_mode"],
-                    lane=routing["lane"],
-                    routing_key_used=routing["routing_key_used"],
-                    decision_source=routing["decision_source"],
-                    decision_reason=routing["decision_reason"],
-                    last_error_code=None,
-                    last_error_message=None,
-                    created_at=created_at,
-                    updated_at=created_at,
-                    completed_at=None,
-                )
+        tenant_id = envelope["tenant_id"]
+        if not inflight_store.try_acquire(tenant_id, settings.max_inflight_per_tenant):
+            log_event(
+                logger,
+                "rate_limit.rejected",
+                tenant_id=tenant_id,
+                limit=settings.max_inflight_per_tenant,
             )
-        steps_store.create_steps(job_id, steps)
+            raise HTTPException(status_code=429, detail="tenant inflight limit reached")
 
-        outbox = OutboxEntry(
-            outbox_id=uuid4().hex,
-            tenant_id=envelope["tenant_id"],
-            tenant_bucket=tenant_bucket,
-            job_id=job_id,
-            step_id=protocol.steps[0].step_id,
-            attempt_no=1,
-            lease_id=lease_id,
-            state="PENDING",
-            topic=f"global-bus-p{routing['lane']}",
-            partition=str(routing["lane"]),
-            payload={
-                "jobId": job_id,
-                "tenant_id": envelope["tenant_id"],
-                "stepId": protocol.steps[0].step_id,
-                "protocol_id": protocol.protocol_id,
-                "step_type": protocol.steps[0].step_type,
-                "attempt_no": 1,
-                "lease_id": lease_id,
-                "input_ref": envelope["input_ref"],
-                "workspace_ref": envelope.get("workspace_ref", {}),
-                "output_ref": envelope["output_ref"],
-                "payload": steps[0].payload,
-                "callback_urls": envelope.get("callback_urls", {}),
-                "mode": routing["resolved_mode"],
-                "lane": routing["lane"],
-                "routing_key_used": routing["routing_key_used"],
-            },
-            resolved_mode=routing["resolved_mode"],
-            lane=routing["lane"],
-            routing_key_used=routing["routing_key_used"],
-            decision_source=routing["decision_source"],
-            decision_reason=routing["decision_reason"],
-            created_at=created_at,
-            sent_at=None,
-            updated_at=created_at,
-        )
-        outbox_store.create_outbox(outbox)
-        log_event(
-            logger,
-            "outbox.created",
-            job_id=job_id,
-            step_id=protocol.steps[0].step_id,
-            tenant_id=envelope["tenant_id"],
-            topic=outbox.topic,
-            partition=outbox.partition,
-            attempt_no=outbox.attempt_no,
-            lease_id=outbox.lease_id,
-        )
-
-        job.state = "DISPATCHING"
-        job.updated_at = _now_iso()
-        job = jobs_store.update_job(job, job.etag or "")
-
-        idempotency_store.put(
-            JobIdempotency(
+        try:
+            routing = _routing_decision(envelope)
+            log_event(
+                logger,
+                "routing.resolved",
                 tenant_id=envelope["tenant_id"],
-                idempotency_hash=digest,
-                job_id=job_id,
-                created_at=created_at,
+                resolved_mode=routing["resolved_mode"],
+                lane=routing["lane"],
+                routing_key_used=routing["routing_key_used"],
             )
-        )
-        job_index_store.put(
-            JobIndex(
+
+            job_id = uuid4().hex
+            created_at = _now_iso()
+            tenant_bucket = _tenant_bucket(envelope["tenant_id"], created_at)
+            lease_id = uuid4().hex
+            lease_expires_at = _lease_expires_at()
+            job = Job(
                 job_id=job_id,
                 tenant_id=envelope["tenant_id"],
                 tenant_bucket=tenant_bucket,
+                request_type=request_type,
+                doc_id=envelope.get("doc_id"),
+                protocol_id=protocol.protocol_id,
+                mode=routing["resolved_mode"],
+                state="QUEUED",
+                idempotency_key=envelope.get("idempotency_key"),
+                idempotency_hash=digest,
+                current_step_id=protocol.steps[0].step_id,
+                current_step_index=0,
+                attempts_total=0,
                 created_at=created_at,
+                updated_at=created_at,
+                completed_at=None,
+                error_code=None,
+                error_message=None,
+                correlation_id=envelope.get("correlation_id"),
+                traceparent=envelope.get("traceparent"),
             )
-        )
+            job = jobs_store.create_job(job)
 
-        return JSONResponse(status_code=202, content={"jobId": job_id})
+            steps = []
+            for index, step in enumerate(protocol.steps):
+                if isinstance(payload, dict) and "steps" in payload:
+                    step_payload = payload["steps"].get(step.step_id, {})
+                else:
+                    step_payload = payload
+                if index == 0:
+                    step_state = "DISPATCHING"
+                    attempt_no = 1
+                    step_lease_id = lease_id
+                    step_lease_expires_at = lease_expires_at
+                else:
+                    step_state = "PENDING"
+                    attempt_no = 0
+                    step_lease_id = ""
+                    step_lease_expires_at = ""
+                steps.append(
+                    Step(
+                        job_id=job_id,
+                        step_index=index,
+                        step_id=step.step_id,
+                        step_type=step.step_type,
+                        service=step.service,
+                        state=step_state,
+                        attempt_no=attempt_no,
+                        lease_id=step_lease_id,
+                        lease_expires_at=step_lease_expires_at,
+                        input_ref=envelope["input_ref"],
+                        workspace_ref=envelope.get("workspace_ref", {}),
+                        output_ref=envelope["output_ref"],
+                        payload=step_payload,
+                        resolved_mode=routing["resolved_mode"],
+                        lane=routing["lane"],
+                        routing_key_used=routing["routing_key_used"],
+                        decision_source=routing["decision_source"],
+                        decision_reason=routing["decision_reason"],
+                        last_error_code=None,
+                        last_error_message=None,
+                        created_at=created_at,
+                        updated_at=created_at,
+                        completed_at=None,
+                    )
+                )
+            steps_store.create_steps(job_id, steps)
+
+            outbox = OutboxEntry(
+                outbox_id=uuid4().hex,
+                tenant_id=envelope["tenant_id"],
+                tenant_bucket=tenant_bucket,
+                job_id=job_id,
+                step_id=protocol.steps[0].step_id,
+                attempt_no=1,
+                lease_id=lease_id,
+                state="PENDING",
+                topic=f"global-bus-p{routing['lane']}",
+                partition=str(routing["lane"]),
+                payload={
+                    "jobId": job_id,
+                    "tenant_id": envelope["tenant_id"],
+                    "stepId": protocol.steps[0].step_id,
+                    "protocol_id": protocol.protocol_id,
+                    "step_type": protocol.steps[0].step_type,
+                    "attempt_no": 1,
+                    "lease_id": lease_id,
+                    "input_ref": envelope["input_ref"],
+                    "workspace_ref": envelope.get("workspace_ref", {}),
+                    "output_ref": envelope["output_ref"],
+                    "payload": steps[0].payload,
+                    "callback_urls": envelope.get("callback_urls", {}),
+                    "mode": routing["resolved_mode"],
+                    "lane": routing["lane"],
+                    "routing_key_used": routing["routing_key_used"],
+                },
+                resolved_mode=routing["resolved_mode"],
+                lane=routing["lane"],
+                routing_key_used=routing["routing_key_used"],
+                decision_source=routing["decision_source"],
+                decision_reason=routing["decision_reason"],
+                created_at=created_at,
+                sent_at=None,
+                updated_at=created_at,
+            )
+            outbox_store.create_outbox(outbox)
+            log_event(
+                logger,
+                "outbox.created",
+                job_id=job_id,
+                step_id=protocol.steps[0].step_id,
+                tenant_id=envelope["tenant_id"],
+                topic=outbox.topic,
+                partition=outbox.partition,
+                attempt_no=outbox.attempt_no,
+                lease_id=outbox.lease_id,
+            )
+
+            job.state = "DISPATCHING"
+            job.updated_at = _now_iso()
+            job = jobs_store.update_job(job, job.etag or "")
+
+            idempotency_store.put(
+                JobIdempotency(
+                    tenant_id=envelope["tenant_id"],
+                    idempotency_hash=digest,
+                    job_id=job_id,
+                    created_at=created_at,
+                )
+            )
+            job_index_store.put(
+                JobIndex(
+                    job_id=job_id,
+                    tenant_id=envelope["tenant_id"],
+                    tenant_bucket=tenant_bucket,
+                    created_at=created_at,
+                )
+            )
+
+            return JSONResponse(status_code=202, content={"jobId": job_id})
+        except Exception:
+            inflight_store.release(tenant_id)
+            raise
 
     @app.post("/v1/callbacks/ack")
     async def ack_callback(payload: Dict[str, Any]):
@@ -443,6 +463,7 @@ def create_app() -> FastAPI:
             job.updated_at = now
             job.completed_at = now
             jobs_store.update_job(job, job.etag or "")
+            inflight_store.release(job.tenant_id)
         elif step.state == "FAILED_FINAL":
             job.state = "FAILED_FINAL"
             job.updated_at = now
@@ -450,6 +471,7 @@ def create_app() -> FastAPI:
             job.error_code = step.last_error_code
             job.error_message = step.last_error_message
             jobs_store.update_job(job, job.etag or "")
+            inflight_store.release(job.tenant_id)
 
         log_event(
             logger,
