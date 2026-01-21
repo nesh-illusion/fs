@@ -46,18 +46,18 @@ Exit criteria:
 - Orchestrator creates jobs/steps + outbox
 
 Work completed:
-- src/lucius/api/app.py
-- src/lucius/ledger/memory_store.py
-- src/lucius/ledger/table_storage.py
-- src/lucius/config/protocols.py
-- src/lucius/config/settings.py
+- services/lucius_orchestrator/api/app.py
+- services/lucius_orchestrator/ledger/memory_store.py
+- services/lucius_orchestrator/ledger/table_storage.py
+- services/lucius_orchestrator/config/protocols.py
+- services/lucius_orchestrator/config/settings.py
 - docs/phase2-implementation.md
 - tests/validation/test_job_index.py
 - tests/api/test_job_lookup.py
 - tests/api/test_command_errors.py
   - In progress: tests/validation/test_idempotency.py, tests/validation/test_schema_validator.py
 
-## Phase 3 — Reconciliation Service (next)
+## Phase 3 — Reconciliation Service (done)
 Exit criteria:
 - Dispatcher publishes outbox to Service Bus
 - Sweeper loops implemented with retry logic
@@ -67,11 +67,32 @@ Planned work:
 - ACK sweeper moves AWAITING_ACK -> FAILED_RETRY
 - Lease sweeper moves IN_PROGRESS -> FAILED_RETRY or FAILED_FINAL
 - Drift sweeper fixes stuck DISPATCHING/OUTBOX
+  - In progress: services/lucius_dispatcher/app/dispatcher.py, services/lucius_dispatcher/app/sweepers.py, services/lucius_dispatcher/app/service.py
+  - In progress: services/lucius_dispatcher/app/runner.py, services/lucius_dispatcher/app/publisher.py, admin endpoints in services/lucius_orchestrator/api/app.py, services/lucius_orchestrator/config/settings.py
+  - In progress: services/lucius_dispatcher/*
 
-## Phase 4 — Bus + Platform Skeleton
+## Phase 4 — Bus + Platform Skeleton (done)
 Exit criteria:
 - Service Bus topic/partition conventions defined
 - Platform skeleton with ACK/RESULT callbacks ready
+
+Planned work:
+- Define bus conventions (topics/partitions)
+- Provide platform skeleton template
+  - In progress: docs/phase4-platform-skeleton.md
+  - In progress: services/ocr/app/*, services/embedding/app/*, services/sis/app/*
+  - In progress: services/ocr/pyproject.toml, services/embedding/pyproject.toml, services/sis/pyproject.toml
+  - In progress: services/ocr/app/servicebus_consumer.py, services/embedding/app/servicebus_consumer.py, services/sis/app/servicebus_consumer.py
+  - In progress: services/ocr/app/idempotency_store.py, services/embedding/app/idempotency_store.py, services/sis/app/idempotency_store.py
+  - In progress: retry/backoff + DLQ handling in platform Service Bus consumers
+  - In progress: services/ocr/tests/test_idempotency_store.py, services/ocr/tests/test_consumer.py
+  - In progress: ACK/RESULT timestamp + service bus message parsing fixes
+
+Work completed:
+- docs/phase4-platform-skeleton.md
+- services/ocr/*
+- services/embedding/*
+- services/sis/*
 
 ## Phase 5 — Observability + Guardrails
 Exit criteria:

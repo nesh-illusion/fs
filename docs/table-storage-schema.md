@@ -29,6 +29,9 @@ Common queries:
 - `GET latest jobs for tenant`: query by PartitionKey
 - `idempotency lookup`: `JobIdempotency` table direct read
 
+Fields (selected):
+- `doc_id` (optional, required when mode=BURST)
+
 ## Table: Steps
 PartitionKey: `jobId`  
 RowKey: `step_index#step_id`

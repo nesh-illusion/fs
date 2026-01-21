@@ -1,0 +1,32 @@
+services:
+  lucius_orchestrator:
+    build:
+      context: .
+      dockerfile: services/lucius_orchestrator/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      LUCIUS_STORAGE_BACKEND: "memory"
+
+  lucius_dispatcher:
+    build:
+      context: .
+      dockerfile: services/lucius_dispatcher/Dockerfile
+    environment:
+      LUCIUS_STORAGE_BACKEND: "memory"
+    command: ["lucius-reconciliation", "loop", "--partition", "t1#202401", "--interval", "5"]
+
+  embedding:
+    build:
+      context: services/embedding
+      dockerfile: Dockerfile
+
+  ocr:
+    build:
+      context: services/ocr
+      dockerfile: Dockerfile
+
+  sis:
+    build:
+      context: services/sis
+      dockerfile: Dockerfile

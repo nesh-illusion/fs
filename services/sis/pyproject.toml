@@ -1,0 +1,13 @@
+[project]
+name = "lucius-sis"
+version = "0.1.0"
+description = "LUCIUS SIS platform service"
+requires-python = ">=3.11"
+dependencies = [
+  "requests>=2.31.0",
+  "azure-servicebus>=7.11.0",
+  "azure-data-tables>=12.4.0",
+]
+
+[project.scripts]
+lucius-sis = "app.main:main"

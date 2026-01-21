@@ -1,6 +1,6 @@
 import pytest
 
-from lucius.validation.validator import SchemaValidator
+from lucius_orchestrator.validation.validator import SchemaValidator
 
 
 def test_envelope_validation_accepts_minimal_payload():

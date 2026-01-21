@@ -20,6 +20,10 @@
       "type": "string",
       "minLength": 1
     },
+    "doc_id": {
+      "type": "string",
+      "minLength": 1
+    },
     "mode": {
       "type": "string",
       "enum": ["DEFAULT", "BURST"]

@@ -1,5 +1,5 @@
-from lucius.ledger.memory_store import MemoryJobIndexStore
-from lucius.ledger.models import JobIndex
+from lucius_orchestrator.ledger.memory_store import MemoryJobIndexStore
+from lucius_orchestrator.ledger.models import JobIndex
 
 
 def test_job_index_lookup_round_trip():

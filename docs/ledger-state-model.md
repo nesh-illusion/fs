@@ -8,6 +8,7 @@ All tables use optimistic concurrency with ETags. Terminal states are immutable.
 - RowKey: `jobId`
 - Fields:
   - `tenant_id`, `request_type`, `protocol_id`, `mode`
+  - `doc_id` (optional)
   - `state` (job state enum)
   - `idempotency_key`, `idempotency_hash`
   - `current_step_id`, `current_step_index`
@@ -25,6 +26,8 @@ All tables use optimistic concurrency with ETags. Terminal states are immutable.
   - `attempt_no`, `lease_id`, `lease_expires_at`
   - `input_ref`, `workspace_ref`, `output_ref`
   - `payload` (opaque JSON)
+  - `resolved_mode`, `lane`, `routing_key_used`
+  - `decision_source`, `decision_reason`
   - `last_error_code`, `last_error_message`
   - `created_at`, `updated_at`, `completed_at`
 
@@ -36,6 +39,8 @@ All tables use optimistic concurrency with ETags. Terminal states are immutable.
   - `state` (`PENDING`, `SENT`, `FAILED_FINAL`)
   - `topic`, `partition`
   - `payload` (directive JSON)
+  - `resolved_mode`, `lane`, `routing_key_used`
+  - `decision_source`, `decision_reason`
   - `created_at`, `sent_at`, `updated_at`
 
 ### Events table (optional)

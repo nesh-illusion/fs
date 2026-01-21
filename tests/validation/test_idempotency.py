@@ -1,4 +1,4 @@
-from lucius.validation.idempotency import canonical_json, idempotency_hash
+from lucius_orchestrator.validation.idempotency import canonical_json, idempotency_hash
 
 
 def test_canonical_json_strips_nulls_and_sorts():

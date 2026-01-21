@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from lucius.api.app import create_app
+from lucius_orchestrator.api.app import create_app
 
 
 @pytest.fixture()
