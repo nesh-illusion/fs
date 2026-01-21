@@ -46,16 +46,16 @@ Exit criteria:
 - Orchestrator creates jobs/steps + outbox
 
 Work completed:
-- services/lucius_orchestrator/api/app.py
-- services/lucius_orchestrator/ledger/memory_store.py
-- services/lucius_orchestrator/ledger/table_storage.py
-- services/lucius_orchestrator/config/protocols.py
-- services/lucius_orchestrator/config/settings.py
+- services/lucius-orchestrator/src/api/app.py
+- services/lucius-orchestrator/src/ledger/memory_store.py
+- services/lucius-orchestrator/src/ledger/table_storage.py
+- services/lucius-orchestrator/src/config/protocols.py
+- services/lucius-orchestrator/src/config/settings.py
 - docs/phase2-implementation.md
-- tests/lucius_orchestrator/validation/test_job_index.py
-- tests/lucius_orchestrator/api/test_job_lookup.py
-- tests/lucius_orchestrator/api/test_command_errors.py
-  - In progress: tests/lucius_orchestrator/validation/test_idempotency.py, tests/lucius_orchestrator/validation/test_schema_validator.py
+- services/lucius-orchestrator/tests/validation/test_job_index.py
+- services/lucius-orchestrator/tests/api/test_job_lookup.py
+- services/lucius-orchestrator/tests/api/test_command_errors.py
+  - In progress: services/lucius-orchestrator/tests/validation/test_idempotency.py, services/lucius-orchestrator/tests/validation/test_schema_validator.py
 
 ## Phase 3 — Reconciliation Service (done)
 Exit criteria:
@@ -67,9 +67,9 @@ Planned work:
 - ACK sweeper moves AWAITING_ACK -> FAILED_RETRY
 - Lease sweeper moves IN_PROGRESS -> FAILED_RETRY or FAILED_FINAL
 - Drift sweeper fixes stuck DISPATCHING/OUTBOX
-  - In progress: services/lucius_dispatcher/app/dispatcher.py, services/lucius_dispatcher/app/sweepers.py, services/lucius_dispatcher/app/service.py
-  - In progress: services/lucius_dispatcher/app/runner.py, services/lucius_dispatcher/app/publisher.py, admin endpoints in services/lucius_orchestrator/api/app.py, services/lucius_orchestrator/config/settings.py
-  - In progress: services/lucius_dispatcher/*
+  - In progress: services/lucius-dispatcher/src/lucius_dispatcher/app/dispatcher.py, services/lucius-dispatcher/src/lucius_dispatcher/app/sweepers.py, services/lucius-dispatcher/src/lucius_dispatcher/app/service.py
+  - In progress: services/lucius-dispatcher/src/lucius_dispatcher/app/runner.py, services/lucius-dispatcher/src/lucius_dispatcher/app/publisher.py, admin endpoints in services/lucius-orchestrator/src/api/app.py, services/lucius-orchestrator/src/config/settings.py
+  - In progress: services/lucius-dispatcher/src/lucius_dispatcher/*
 
 ## Phase 4 — Bus + Platform Skeleton (done)
 Exit criteria:
@@ -80,19 +80,19 @@ Planned work:
 - Define bus conventions (topics/partitions)
 - Provide platform skeleton template
   - In progress: docs/phase4-platform-skeleton.md
-  - In progress: services/ocr/app/*, services/embedding/app/*, services/sis/app/*
-  - In progress: services/ocr/pyproject.toml, services/embedding/pyproject.toml, services/sis/pyproject.toml
-  - In progress: services/ocr/app/servicebus_consumer.py, services/embedding/app/servicebus_consumer.py, services/sis/app/servicebus_consumer.py
-  - In progress: services/ocr/app/idempotency_store.py, services/embedding/app/idempotency_store.py, services/sis/app/idempotency_store.py
+  - In progress: services/distributed-ocr/app/*, services/vector-ingestion/app/*, services/semantic-intelligence/app/*
+  - In progress: services/distributed-ocr/pyproject.toml, services/vector-ingestion/pyproject.toml, services/semantic-intelligence/pyproject.toml
+  - In progress: services/distributed-ocr/app/servicebus_consumer.py, services/vector-ingestion/app/servicebus_consumer.py, services/semantic-intelligence/app/servicebus_consumer.py
+  - In progress: services/distributed-ocr/app/idempotency_store.py, services/vector-ingestion/app/idempotency_store.py, services/semantic-intelligence/app/idempotency_store.py
   - In progress: retry/backoff + DLQ handling in platform Service Bus consumers
-  - In progress: tests/ocr/unit/test_idempotency_store.py, tests/ocr/unit/test_consumer.py
+  - In progress: services/distributed-ocr/tests/unit/test_idempotency_store.py, services/distributed-ocr/tests/unit/test_consumer.py
   - In progress: ACK/RESULT timestamp + service bus message parsing fixes
 
 Work completed:
 - docs/phase4-platform-skeleton.md
-- services/ocr/*
-- services/embedding/*
-- services/sis/*
+- services/distributed-ocr/*
+- services/vector-ingestion/*
+- services/semantic-intelligence/*
 
 ## Phase 5 — Observability + Guardrails
 Exit criteria:

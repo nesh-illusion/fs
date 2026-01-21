@@ -1,43 +1,43 @@
 services:
-  lucius_orchestrator:
+  lucius-orchestrator:
     build:
       context: .
-      dockerfile: services/lucius_orchestrator/Dockerfile
+      dockerfile: services/lucius-orchestrator/Dockerfile
     ports:
       - "8000:8000"
     environment:
       LUCIUS_STORAGE_BACKEND: "memory"
 
-  lucius_dispatcher_0:
+  lucius-dispatcher-0:
     build:
       context: .
-      dockerfile: services/lucius_dispatcher/Dockerfile
+      dockerfile: services/lucius-dispatcher/Dockerfile
     environment:
       LUCIUS_STORAGE_BACKEND: "memory"
     command: ["lucius-reconciliation", "loop", "--shard-index", "0", "--shard-count", "2", "--interval", "5"]
 
-  lucius_dispatcher_1:
+  lucius-dispatcher-1:
     build:
       context: .
-      dockerfile: services/lucius_dispatcher/Dockerfile
+      dockerfile: services/lucius-dispatcher/Dockerfile
     environment:
       LUCIUS_STORAGE_BACKEND: "memory"
     command: ["lucius-reconciliation", "loop", "--shard-index", "1", "--shard-count", "2", "--interval", "5"]
 
-  embedding:
+  vector-ingestion:
     build:
       context: .
-      dockerfile: services/embedding/Dockerfile
+      dockerfile: services/vector-ingestion/Dockerfile
 
-  ocr:
+  distributed-ocr:
     build:
       context: .
-      dockerfile: services/ocr/Dockerfile
+      dockerfile: services/distributed-ocr/Dockerfile
 
-  sis:
+  semantic-intelligence:
     build:
       context: .
-      dockerfile: services/sis/Dockerfile
+      dockerfile: services/semantic-intelligence/Dockerfile
 
   test_runner:
     build:
@@ -47,9 +47,9 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       TMPDIR: "/tmp"
     depends_on:
-      - lucius_orchestrator
-      - lucius_dispatcher_0
-      - lucius_dispatcher_1
-      - ocr
-      - embedding
-      - sis
+      - lucius-orchestrator
+      - lucius-dispatcher-0
+      - lucius-dispatcher-1
+      - distributed-ocr
+      - vector-ingestion
+      - semantic-intelligence

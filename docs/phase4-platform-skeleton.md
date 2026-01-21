@@ -6,7 +6,7 @@
 - Message body: directive JSON schema v1
 
 ## Platform skeleton
-Location: `services/lucius_orchestrator/platform_skeleton/`
+Location: `services/lucius-orchestrator/platform_skeleton/`
 - `directive_model.py`: directive parsing
 - `consumer.py`: main handler + execute hook
 - `idempotency_store.py`: idempotency gating
