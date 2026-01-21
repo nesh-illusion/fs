@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lucius.local/schemas/command-envelope.v1.schema.json",
+  "title": "LUCIUS Command Envelope v1",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "request_type",
+    "input_ref",
+    "output_ref",
+    "payload",
+    "schema_version"
+  ],
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["DEFAULT", "BURST"]
+    },
+    "input_ref": {
+      "$ref": "#/$defs/ref"
+    },
+    "output_ref": {
+      "$ref": "#/$defs/ref"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": ["v1"]
+    },
+    "correlation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "traceparent": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": ["uri"],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "minLength": 1
+            },
+            "checksum": {
+              "type": "string",
+              "minLength": 1
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "content_type": {
+              "type": "string",
+              "minLength": 1
+            },
+            "metadata": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lucius.local/schemas/protocol-registry.v1.schema.json",
+  "title": "LUCIUS Protocol Registry v1",
+  "type": "object",
+  "required": ["schema_version", "protocols"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["v1"]
+    },
+    "protocols": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/protocol"
+      }
+    }
+  },
+  "$defs": {
+    "protocol": {
+      "type": "object",
+      "required": ["protocol_id", "request_types", "steps"],
+      "properties": {
+        "protocol_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        },
+        "mode_overrides": {
+          "type": "object",
+          "properties": {
+            "default": {"type": "string"},
+            "safe": {"type": "string"},
+            "burst": {"type": "string"}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "step": {
+      "type": "object",
+      "required": ["step_id", "step_type", "service"],
+      "properties": {
+        "step_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "step_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "service": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload_schema_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout_overrides": {
+          "type": "object",
+          "properties": {
+            "ack_seconds": {"type": "integer", "minimum": 1},
+            "lease_seconds": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

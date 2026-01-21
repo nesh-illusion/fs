@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lucius.local/schemas/steps/sis.v1.json",
+  "title": "SIS Step Payload v1",
+  "type": "object",
+  "properties": {
+    "prompt_set": {
+      "type": "string",
+      "minLength": 1
+    },
+    "temperature": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 2.0
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "response_format": {
+      "type": "string",
+      "enum": ["TEXT", "JSON"]
+    }
+  },
+  "additionalProperties": true
+}

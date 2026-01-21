@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lucius.local/schemas/steps/ocr.v1.json",
+  "title": "OCR Step Payload v1",
+  "type": "object",
+  "properties": {
+    "language_hint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page_range": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ocr_engine": {
+      "type": "string",
+      "minLength": 1
+    },
+    "output_format": {
+      "type": "string",
+      "enum": ["TEXT", "JSON"]
+    }
+  },
+  "additionalProperties": true
+}

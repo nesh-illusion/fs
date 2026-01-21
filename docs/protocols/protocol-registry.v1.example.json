@@ -1,0 +1,101 @@
+{
+  "schema_version": "v1",
+  "protocols": [
+    {
+      "protocol_id": "ocr-embedding-sis.v1",
+      "request_types": ["OCR->EMBEDDING->SIS"],
+      "steps": [
+        {
+          "step_id": "ocr",
+          "step_type": "OCR",
+          "service": "platform-ocr",
+          "payload_schema_ref": "schemas/steps/ocr.v1.json"
+        },
+        {
+          "step_id": "embedding",
+          "step_type": "EMBEDDING",
+          "service": "platform-embedding",
+          "payload_schema_ref": "schemas/steps/embedding.v1.json"
+        },
+        {
+          "step_id": "sis",
+          "step_type": "SIS",
+          "service": "platform-sis",
+          "payload_schema_ref": "schemas/steps/sis.v1.json"
+        }
+      ]
+    },
+    {
+      "protocol_id": "ocr-embedding.v1",
+      "request_types": ["OCR->EMBEDDING"],
+      "steps": [
+        {
+          "step_id": "ocr",
+          "step_type": "OCR",
+          "service": "platform-ocr",
+          "payload_schema_ref": "schemas/steps/ocr.v1.json"
+        },
+        {
+          "step_id": "embedding",
+          "step_type": "EMBEDDING",
+          "service": "platform-embedding",
+          "payload_schema_ref": "schemas/steps/embedding.v1.json"
+        }
+      ]
+    },
+    {
+      "protocol_id": "embedding-sis.v1",
+      "request_types": ["EMBEDDING->SIS"],
+      "steps": [
+        {
+          "step_id": "embedding",
+          "step_type": "EMBEDDING",
+          "service": "platform-embedding",
+          "payload_schema_ref": "schemas/steps/embedding.v1.json"
+        },
+        {
+          "step_id": "sis",
+          "step_type": "SIS",
+          "service": "platform-sis",
+          "payload_schema_ref": "schemas/steps/sis.v1.json"
+        }
+      ]
+    },
+    {
+      "protocol_id": "atomic-ocr.v1",
+      "request_types": ["OCR"],
+      "steps": [
+        {
+          "step_id": "ocr",
+          "step_type": "OCR",
+          "service": "platform-ocr",
+          "payload_schema_ref": "schemas/steps/ocr.v1.json"
+        }
+      ]
+    },
+    {
+      "protocol_id": "atomic-embedding.v1",
+      "request_types": ["EMBEDDING"],
+      "steps": [
+        {
+          "step_id": "embedding",
+          "step_type": "EMBEDDING",
+          "service": "platform-embedding",
+          "payload_schema_ref": "schemas/steps/embedding.v1.json"
+        }
+      ]
+    },
+    {
+      "protocol_id": "atomic-sis.v1",
+      "request_types": ["SIS"],
+      "steps": [
+        {
+          "step_id": "sis",
+          "step_type": "SIS",
+          "service": "platform-sis",
+          "payload_schema_ref": "schemas/steps/sis.v1.json"
+        }
+      ]
+    }
+  ]
+}
