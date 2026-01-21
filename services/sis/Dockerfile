@@ -1,8 +1,11 @@
 FROM python:3.11-slim
 
 WORKDIR /app
-COPY pyproject.toml /app/
+COPY services/sis/pyproject.toml /app/
+COPY services/shared /app/shared
 RUN pip install --no-cache-dir .
-COPY app /app/app
+COPY services/sis/app /app/app
+
+ENV PYTHONPATH=/app
 
 CMD ["lucius-sis"]

@@ -18,15 +18,29 @@ services:
 
   embedding:
     build:
-      context: services/embedding
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/embedding/Dockerfile
 
   ocr:
     build:
-      context: services/ocr
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/ocr/Dockerfile
 
   sis:
     build:
-      context: services/sis
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/sis/Dockerfile
+
+  test_runner:
+    build:
+      context: .
+      dockerfile: services/test_runner/Dockerfile
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      TMPDIR: "/tmp"
+    depends_on:
+      - lucius_orchestrator
+      - lucius_dispatcher
+      - ocr
+      - embedding
+      - sis

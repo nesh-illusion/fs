@@ -27,6 +27,7 @@ from lucius_orchestrator.validation.idempotency import idempotency_hash
 from lucius_orchestrator.validation.validator import SchemaValidator
 from lucius_dispatcher.app.service import ReconciliationConfig, ReconciliationService
 from lucius_dispatcher.app.stores import build_stores as build_recon_stores
+from shared.logging import get_logger, log_event
 
 try:
     import jsonschema
@@ -116,6 +117,7 @@ def _find_step(steps: list[Step], step_id: str) -> Step | None:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="LUCIUS Orchestrator")
+    logger = get_logger("lucius_orchestrator")
 
     settings = AppSettings.from_env()
     validator = SchemaValidator()
@@ -132,6 +134,14 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/commands")
     async def create_command(envelope: Dict[str, Any]):
+        log_event(
+            logger,
+            "command.received",
+            tenant_id=envelope.get("tenant_id"),
+            request_type=envelope.get("request_type"),
+            mode=envelope.get("mode"),
+            doc_id=envelope.get("doc_id"),
+        )
         try:
             validator.validate_envelope(envelope)
         except Exception as exc:
@@ -168,6 +178,14 @@ def create_app() -> FastAPI:
             raise
 
         routing = _routing_decision(envelope)
+        log_event(
+            logger,
+            "routing.resolved",
+            tenant_id=envelope["tenant_id"],
+            resolved_mode=routing["resolved_mode"],
+            lane=routing["lane"],
+            routing_key_used=routing["routing_key_used"],
+        )
         job_id = uuid4().hex
         created_at = _now_iso()
         tenant_bucket = _tenant_bucket(envelope["tenant_id"], created_at)
@@ -280,6 +298,17 @@ def create_app() -> FastAPI:
             updated_at=created_at,
         )
         outbox_store.create_outbox(outbox)
+        log_event(
+            logger,
+            "outbox.created",
+            job_id=job_id,
+            step_id=protocol.steps[0].step_id,
+            tenant_id=envelope["tenant_id"],
+            topic=outbox.topic,
+            partition=outbox.partition,
+            attempt_no=outbox.attempt_no,
+            lease_id=outbox.lease_id,
+        )
 
         job.state = "DISPATCHING"
         job.updated_at = _now_iso()
@@ -306,6 +335,15 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/callbacks/ack")
     async def ack_callback(payload: Dict[str, Any]):
+        log_event(
+            logger,
+            "callback.ack.received",
+            job_id=payload.get("jobId"),
+            step_id=payload.get("stepId"),
+            tenant_id=payload.get("tenant_id"),
+            attempt_no=payload.get("attempt_no"),
+            lease_id=payload.get("lease_id"),
+        )
         job_id = payload.get("jobId")
         step_id = payload.get("stepId")
         tenant_id = payload.get("tenant_id")
@@ -338,10 +376,28 @@ def create_app() -> FastAPI:
             job.updated_at = _now_iso()
             jobs_store.update_job(job, job.etag or "")
 
+        log_event(
+            logger,
+            "callback.ack.accepted",
+            job_id=job_id,
+            step_id=step_id,
+            tenant_id=tenant_id,
+            attempt_no=attempt_no,
+        )
         return {"status": "ok"}
 
     @app.post("/v1/callbacks/result")
     async def result_callback(payload: Dict[str, Any]):
+        log_event(
+            logger,
+            "callback.result.received",
+            job_id=payload.get("jobId"),
+            step_id=payload.get("stepId"),
+            tenant_id=payload.get("tenant_id"),
+            attempt_no=payload.get("attempt_no"),
+            lease_id=payload.get("lease_id"),
+            status=payload.get("status"),
+        )
         job_id = payload.get("jobId")
         step_id = payload.get("stepId")
         tenant_id = payload.get("tenant_id")
@@ -395,6 +451,14 @@ def create_app() -> FastAPI:
             job.error_message = step.last_error_message
             jobs_store.update_job(job, job.etag or "")
 
+        log_event(
+            logger,
+            "callback.result.accepted",
+            job_id=job_id,
+            step_id=step_id,
+            tenant_id=tenant_id,
+            status=step.state,
+        )
         return {"status": "ok"}
 
     @app.get("/v1/jobs/{job_id}")
