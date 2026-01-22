@@ -39,6 +39,8 @@ Required/optional environment variables:
 - `LUCIUS_OUTBOX_RETRY_ENABLED=true|false`
 - `LUCIUS_OUTBOX_RETRY_INTERVAL` (seconds, default 5.0)
 - `LUCIUS_OUTBOX_RETRY_BATCH_SIZE`
+- `LUCIUS_OUTBOX_RETRY_DELAY` (seconds, default 30.0)
+- `LUCIUS_OUTBOX_MAX_ATTEMPTS` (default 3)
 
 Memory mode uses in-process stores and does not persist state between restarts.
 

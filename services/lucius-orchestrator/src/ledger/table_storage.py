@@ -233,6 +233,7 @@ class TableOutboxStore(OutboxStore):
             "decision_source": entry.decision_source,
             "decision_reason": entry.decision_reason,
             "created_at": entry.created_at,
+            "next_attempt_at": entry.next_attempt_at,
             "sent_at": entry.sent_at,
             "updated_at": entry.updated_at,
         }
@@ -264,6 +265,7 @@ class TableOutboxStore(OutboxStore):
                     decision_source=entity.get("decision_source", "UNKNOWN"),
                     decision_reason=entity.get("decision_reason", ""),
                     created_at=entity["created_at"],
+                    next_attempt_at=entity.get("next_attempt_at"),
                     sent_at=entity.get("sent_at"),
                     updated_at=entity["updated_at"],
                     etag=entity.get("etag") or entity.get("odata.etag"),
@@ -298,10 +300,38 @@ class TableOutboxStore(OutboxStore):
             decision_source=entity.get("decision_source", "UNKNOWN"),
             decision_reason=entity.get("decision_reason", ""),
             created_at=entity["created_at"],
+            next_attempt_at=entity.get("next_attempt_at"),
             sent_at=entity.get("sent_at"),
             updated_at=entity["updated_at"],
             etag=entity.get("etag") or entity.get("odata.etag"),
         )
+
+    def update_outbox(self, entry: OutboxEntry, etag: str) -> OutboxEntry:
+        entity = {
+            "PartitionKey": entry.tenant_bucket,
+            "RowKey": entry.outbox_id,
+            "jobId": entry.job_id,
+            "stepId": entry.step_id,
+            "tenant_id": entry.tenant_id,
+            "tenant_bucket": entry.tenant_bucket,
+            "attempt_no": entry.attempt_no,
+            "lease_id": entry.lease_id,
+            "state": entry.state,
+            "topic": entry.topic,
+            "partition": entry.partition,
+            "payload": entry.payload,
+            "resolved_mode": entry.resolved_mode,
+            "lane": entry.lane,
+            "routing_key_used": entry.routing_key_used,
+            "decision_source": entry.decision_source,
+            "decision_reason": entry.decision_reason,
+            "created_at": entry.created_at,
+            "next_attempt_at": entry.next_attempt_at,
+            "sent_at": entry.sent_at,
+            "updated_at": entry.updated_at,
+        }
+        self._table.update_entity(entity, mode=UpdateMode.REPLACE, etag=etag)
+        return replace(entry, etag=None)
 
 
 class TableIdempotencyStore(IdempotencyStore):
@@ -579,6 +609,7 @@ class TableLedgerOutboxStore(OutboxStore):
             "decision_source": entry.decision_source,
             "decision_reason": entry.decision_reason,
             "created_at": entry.created_at,
+            "next_attempt_at": entry.next_attempt_at,
             "sent_at": entry.sent_at,
             "updated_at": entry.updated_at,
         }
@@ -619,6 +650,7 @@ class TableLedgerOutboxStore(OutboxStore):
                     decision_source=entity.get("decision_source", "UNKNOWN"),
                     decision_reason=entity.get("decision_reason", ""),
                     created_at=entity["created_at"],
+                    next_attempt_at=entity.get("next_attempt_at"),
                     sent_at=entity.get("sent_at"),
                     updated_at=entity["updated_at"],
                     etag=entity.get("etag") or entity.get("odata.etag"),
@@ -654,7 +686,35 @@ class TableLedgerOutboxStore(OutboxStore):
             decision_source=entity.get("decision_source", "UNKNOWN"),
             decision_reason=entity.get("decision_reason", ""),
             created_at=entity["created_at"],
+            next_attempt_at=entity.get("next_attempt_at"),
             sent_at=entity.get("sent_at"),
             updated_at=entity["updated_at"],
             etag=entity.get("etag") or entity.get("odata.etag"),
         )
+
+    def update_outbox(self, entry: OutboxEntry, etag: str) -> OutboxEntry:
+        entity = {
+            "PartitionKey": entry.tenant_bucket,
+            "RowKey": f"OUTBOX#{entry.outbox_id}",
+            "jobId": entry.job_id,
+            "stepId": entry.step_id,
+            "tenant_id": entry.tenant_id,
+            "tenant_bucket": entry.tenant_bucket,
+            "attempt_no": entry.attempt_no,
+            "lease_id": entry.lease_id,
+            "state": entry.state,
+            "topic": entry.topic,
+            "partition": entry.partition,
+            "payload": entry.payload,
+            "resolved_mode": entry.resolved_mode,
+            "lane": entry.lane,
+            "routing_key_used": entry.routing_key_used,
+            "decision_source": entry.decision_source,
+            "decision_reason": entry.decision_reason,
+            "created_at": entry.created_at,
+            "next_attempt_at": entry.next_attempt_at,
+            "sent_at": entry.sent_at,
+            "updated_at": entry.updated_at,
+        }
+        self._table.update_entity(entity, mode=UpdateMode.REPLACE, etag=etag)
+        return replace(entry, etag=None)

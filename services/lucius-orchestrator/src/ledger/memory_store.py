@@ -77,11 +77,13 @@ class MemoryOutboxStore(OutboxStore):
         return entry
 
     def list_pending(self, partition_key: str, limit: int) -> List[OutboxEntry]:
-        pending = [
-            entry
-            for entry in self._entries.values()
-            if entry.state == "PENDING" and entry.tenant_bucket == partition_key
-        ]
+        pending = []
+        for entry in self._entries.values():
+            if entry.state != "PENDING":
+                continue
+            if partition_key != "*" and entry.tenant_bucket != partition_key:
+                continue
+            pending.append(entry)
         return pending[:limit]
 
     def mark_sent(self, outbox_id: str, partition_key: str, etag: str) -> OutboxEntry:
@@ -97,6 +99,15 @@ class MemoryOutboxStore(OutboxStore):
             etag=str(int(etag) + 1),
         )
         self._entries[outbox_id] = updated
+        return updated
+
+    def update_outbox(self, entry: OutboxEntry, etag: str) -> OutboxEntry:
+        current = self._entries.get(entry.outbox_id)
+        if current is None or current.etag != etag:
+            raise ValueError("etag mismatch")
+        next_etag = str(int(etag) + 1)
+        updated = replace(entry, etag=next_etag)
+        self._entries[entry.outbox_id] = updated
         return updated
 
 

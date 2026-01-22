@@ -41,6 +41,9 @@ class OutboxStore(Protocol):
     def mark_sent(self, outbox_id: str, partition_key: str, etag: str) -> OutboxEntry:
         ...
 
+    def update_outbox(self, entry: OutboxEntry, etag: str) -> OutboxEntry:
+        ...
+
 
 class IdempotencyStore(Protocol):
     def put(self, record: JobIdempotency) -> None:

@@ -72,12 +72,18 @@ curl -s "http://localhost:8000/v1/jobs/<jobId>/steps"
 ```
 Check `lane` on the step payload.
 
+## Retry + next-step behavior
+- Outbox retry increments `attempt_no` and refreshes `lease_id` before republishing.
+- On a `SUCCEEDED` result for a non-final step, the orchestrator creates/publishes the next step.
+
 ## Service Bus: plug-and-play config
 Required env:
 - `LUCIUS_SERVICEBUS_CONNECTION`
 
 Optional env:
 - `LUCIUS_OUTBOX_PUBLISH_TIMEOUT` (seconds, default 2.0)
+- `LUCIUS_OUTBOX_RETRY_DELAY` (seconds, default 30.0)
+- `LUCIUS_OUTBOX_MAX_ATTEMPTS` (default 3)
 
 Where to set:
 1) Shell:

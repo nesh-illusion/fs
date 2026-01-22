@@ -74,6 +74,7 @@ class OutboxEntry:
     decision_source: str
     decision_reason: str
     created_at: str
+    next_attempt_at: Optional[str]
     sent_at: Optional[str]
     updated_at: str
     etag: Optional[str] = None

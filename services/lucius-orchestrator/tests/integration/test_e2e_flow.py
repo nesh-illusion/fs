@@ -200,4 +200,4 @@ def test_e2e_multi_step_initialization_and_first_step_result():
     steps = app.state.steps_store.get_steps(job_id)
     assert job.state == "IN_PROGRESS"
     assert steps[0].state == "SUCCEEDED"
-    assert steps[1].state == "PENDING"
+    assert steps[1].state == "DISPATCHING"

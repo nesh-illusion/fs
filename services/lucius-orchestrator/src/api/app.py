@@ -54,6 +54,10 @@ def _lease_expires_at(minutes: int = 15) -> str:
     return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
 
 
+def _next_attempt_at(delay_seconds: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
+
+
 def _normalize(value: str) -> str:
     return value.strip().lower()
 
@@ -227,6 +231,8 @@ def create_app() -> FastAPI:
         )
         now = _now_iso()
         if step and step.state in {"DISPATCHING", "PENDING"}:
+            if step.etag is None:
+                step = _find_step(steps_store.get_steps(step.job_id), step.step_id) or step
             step.state = "INITIATED"
             step.updated_at = now
             steps_store.update_step(step, step.etag or "")
@@ -239,19 +245,166 @@ def create_app() -> FastAPI:
             job.updated_at = now
             jobs_store.update_job(job, job.etag or "")
 
-    async def _retry_pending_outbox() -> None:
+    def _should_retry(entry: OutboxEntry, now: datetime) -> bool:
+        if entry.next_attempt_at is None:
+            return True
+        try:
+            ready_at = datetime.fromisoformat(entry.next_attempt_at)
+        except ValueError:
+            return True
+        return now >= ready_at
+
+    def _schedule_retry(entry: OutboxEntry) -> OutboxEntry:
+        base_entry = entry
+        if entry.etag is None:
+            pending = outbox_store.list_pending(entry.tenant_bucket, settings.outbox_retry_batch_size)
+            base_entry = next((item for item in pending if item.outbox_id == entry.outbox_id), entry)
+        updated = OutboxEntry(
+            outbox_id=entry.outbox_id,
+            tenant_id=entry.tenant_id,
+            tenant_bucket=entry.tenant_bucket,
+            job_id=entry.job_id,
+            step_id=entry.step_id,
+            attempt_no=entry.attempt_no,
+            lease_id=entry.lease_id,
+            state="PENDING",
+            topic=entry.topic,
+            partition=entry.partition,
+            payload=entry.payload,
+            resolved_mode=entry.resolved_mode,
+            lane=entry.lane,
+            routing_key_used=entry.routing_key_used,
+            decision_source=entry.decision_source,
+            decision_reason=entry.decision_reason,
+            created_at=entry.created_at,
+            next_attempt_at=_next_attempt_at(settings.outbox_retry_delay_seconds),
+            sent_at=entry.sent_at,
+            updated_at=_now_iso(),
+            etag=base_entry.etag,
+        )
+        return outbox_store.update_outbox(updated, base_entry.etag or "")
+
+    def _refresh_attempt(entry: OutboxEntry, step: Step) -> tuple[OutboxEntry, Step]:
+        lease_id = uuid4().hex
+        attempt_no = (step.attempt_no or 0) + 1
+        now = _now_iso()
+        step.attempt_no = attempt_no
+        step.lease_id = lease_id
+        step.lease_expires_at = _lease_expires_at()
+        step.state = "DISPATCHING"
+        step.updated_at = now
+        updated_step = steps_store.update_step(step, step.etag or "")
+
+        payload = dict(entry.payload)
+        payload["attempt_no"] = attempt_no
+        payload["lease_id"] = lease_id
+
+        refreshed = OutboxEntry(
+            outbox_id=entry.outbox_id,
+            tenant_id=entry.tenant_id,
+            tenant_bucket=entry.tenant_bucket,
+            job_id=entry.job_id,
+            step_id=entry.step_id,
+            attempt_no=attempt_no,
+            lease_id=lease_id,
+            state="PENDING",
+            topic=entry.topic,
+            partition=entry.partition,
+            payload=payload,
+            resolved_mode=entry.resolved_mode,
+            lane=entry.lane,
+            routing_key_used=entry.routing_key_used,
+            decision_source=entry.decision_source,
+            decision_reason=entry.decision_reason,
+            created_at=entry.created_at,
+            next_attempt_at=_now_iso(),
+            sent_at=None,
+            updated_at=now,
+            etag=entry.etag,
+        )
+        updated_entry = outbox_store.update_outbox(refreshed, entry.etag or "")
+        return updated_entry, updated_step
+
+    def _mark_retry_exhausted(entry: OutboxEntry, job: Job, step: Step) -> None:
+        now = _now_iso()
+        step.state = "FAILED_FINAL"
+        step.last_error_code = "RETRY_LIMIT"
+        step.last_error_message = "outbox retry limit exceeded"
+        step.completed_at = now
+        step.updated_at = now
+        steps_store.update_step(step, step.etag or "")
+
+        job.state = "FAILED_FINAL"
+        job.error_code = step.last_error_code
+        job.error_message = step.last_error_message
+        job.completed_at = now
+        job.updated_at = now
+        jobs_store.update_job(job, job.etag or "")
+        inflight_store.release(job.tenant_id)
+
+        exhausted = OutboxEntry(
+            outbox_id=entry.outbox_id,
+            tenant_id=entry.tenant_id,
+            tenant_bucket=entry.tenant_bucket,
+            job_id=entry.job_id,
+            step_id=entry.step_id,
+            attempt_no=entry.attempt_no,
+            lease_id=entry.lease_id,
+            state="FAILED_FINAL",
+            topic=entry.topic,
+            partition=entry.partition,
+            payload=entry.payload,
+            resolved_mode=entry.resolved_mode,
+            lane=entry.lane,
+            routing_key_used=entry.routing_key_used,
+            decision_source=entry.decision_source,
+            decision_reason=entry.decision_reason,
+            created_at=entry.created_at,
+            next_attempt_at=None,
+            sent_at=entry.sent_at,
+            updated_at=now,
+            etag=entry.etag,
+        )
+        outbox_store.update_outbox(exhausted, entry.etag or "")
+
+    async def _process_pending_outbox(partitions: Iterable[str], limit: int) -> None:
         if publisher is None:
             return
-        for partition in _outbox_partitions(settings):
-            entries = outbox_store.list_pending(partition, settings.outbox_retry_batch_size)
+        now = datetime.now(timezone.utc)
+        for partition in partitions:
+            entries = outbox_store.list_pending(partition, limit)
             for entry in entries:
-                if await _publish_entry(entry):
-                    index = job_index_store.get(entry.job_id)
-                    if index is None:
-                        continue
-                    job = jobs_store.get_job(entry.job_id, entry.tenant_id, index.tenant_bucket)
-                    step = _find_step(steps_store.get_steps(entry.job_id), entry.step_id)
-                    _mark_publish_success(entry, job, step)
+                if not _should_retry(entry, now):
+                    continue
+                index = job_index_store.get(entry.job_id)
+                if index is None:
+                    continue
+                job = jobs_store.get_job(entry.job_id, entry.tenant_id, index.tenant_bucket)
+                step = _find_step(steps_store.get_steps(entry.job_id), entry.step_id)
+                if job is None or step is None:
+                    continue
+                if step.attempt_no >= settings.outbox_max_attempts:
+                    _mark_retry_exhausted(entry, job, step)
+                    continue
+                try:
+                    updated_entry, updated_step = _refresh_attempt(entry, step)
+                except Exception as exc:
+                    log_event(
+                        logger,
+                        "outbox.retry.claim_failed",
+                        outbox_id=entry.outbox_id,
+                        job_id=entry.job_id,
+                        step_id=entry.step_id,
+                        error=str(exc),
+                    )
+                    continue
+                if await _publish_entry(updated_entry):
+                    _mark_publish_success(updated_entry, job, updated_step)
+                else:
+                    _schedule_retry(updated_entry)
+
+    async def _retry_pending_outbox() -> None:
+        await _process_pending_outbox(_outbox_partitions(settings), settings.outbox_retry_batch_size)
 
     async def _retry_loop() -> None:
         while True:
@@ -436,6 +589,7 @@ def create_app() -> FastAPI:
                 decision_source=routing["decision_source"],
                 decision_reason=routing["decision_reason"],
                 created_at=created_at,
+                next_attempt_at=_now_iso(),
                 sent_at=None,
                 updated_at=created_at,
             )
@@ -482,9 +636,12 @@ def create_app() -> FastAPI:
                     tenant_id=envelope["tenant_id"],
                     reason="missing_service_bus",
                 )
+                _schedule_retry(outbox_entry)
             elif await _publish_entry(outbox_entry):
                 step = _find_step(steps_store.get_steps(job_id), protocol.steps[0].step_id)
                 _mark_publish_success(outbox_entry, job, step)
+            else:
+                _schedule_retry(outbox_entry)
 
             return JSONResponse(status_code=202, content={"jobId": job_id})
         except Exception:
@@ -603,6 +760,67 @@ def create_app() -> FastAPI:
             job.completed_at = now
             jobs_store.update_job(job, job.etag or "")
             inflight_store.release(job.tenant_id)
+        elif step.state == "SUCCEEDED":
+            next_step = steps[step.step_index + 1]
+            lease_id = uuid4().hex
+            next_step.attempt_no = 1
+            next_step.lease_id = lease_id
+            next_step.lease_expires_at = _lease_expires_at()
+            next_step.state = "DISPATCHING"
+            next_step.updated_at = now
+            next_step = steps_store.update_step(next_step, next_step.etag or "")
+
+            job.current_step_index = next_step.step_index
+            job.current_step_id = next_step.step_id
+            job.updated_at = now
+            jobs_store.update_job(job, job.etag or "")
+
+            outbox_partition = _outbox_partition_key(settings, job.job_id, {"lane": next_step.lane})
+            outbox = OutboxEntry(
+                outbox_id=uuid4().hex,
+                tenant_id=job.tenant_id,
+                tenant_bucket=outbox_partition,
+                job_id=job.job_id,
+                step_id=next_step.step_id,
+                attempt_no=1,
+                lease_id=lease_id,
+                state="PENDING",
+                topic=f"global-bus-p{next_step.lane}",
+                partition=str(next_step.lane),
+                payload={
+                    "jobId": job.job_id,
+                    "tenant_id": job.tenant_id,
+                    "stepId": next_step.step_id,
+                    "protocol_id": job.protocol_id,
+                    "step_type": next_step.step_type,
+                    "attempt_no": 1,
+                    "lease_id": lease_id,
+                    "input_ref": next_step.input_ref,
+                    "workspace_ref": next_step.workspace_ref,
+                    "output_ref": next_step.output_ref,
+                    "payload": next_step.payload,
+                    "callback_urls": {},
+                    "mode": next_step.resolved_mode,
+                    "lane": next_step.lane,
+                    "routing_key_used": next_step.routing_key_used,
+                },
+                resolved_mode=next_step.resolved_mode,
+                lane=next_step.lane,
+                routing_key_used=next_step.routing_key_used,
+                decision_source=next_step.decision_source,
+                decision_reason=next_step.decision_reason,
+                created_at=now,
+                next_attempt_at=now,
+                sent_at=None,
+                updated_at=now,
+            )
+            outbox_entry = outbox_store.create_outbox(outbox)
+            if publisher is None:
+                _schedule_retry(outbox_entry)
+            elif await _publish_entry(outbox_entry):
+                _mark_publish_success(outbox_entry, job, next_step)
+            else:
+                _schedule_retry(outbox_entry)
         elif step.state == "FAILED_FINAL":
             job.state = "FAILED_FINAL"
             job.updated_at = now
@@ -670,16 +888,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail="missing service bus connection")
 
             partitions = [partition_key] if partition_key else list(_outbox_partitions(settings))
-            for partition in partitions:
-                entries = outbox_store.list_pending(partition, limit)
-                for entry in entries:
-                    if await _publish_entry(entry):
-                        index = job_index_store.get(entry.job_id)
-                        if index is None:
-                            continue
-                        job = jobs_store.get_job(entry.job_id, entry.tenant_id, index.tenant_bucket)
-                        step = _find_step(steps_store.get_steps(entry.job_id), entry.step_id)
-                        _mark_publish_success(entry, job, step)
+            await _process_pending_outbox(partitions, limit)
             return {"status": "ok"}
 
     return app

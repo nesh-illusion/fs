@@ -21,6 +21,8 @@ class AppSettings:
     outbox_retry_enabled: bool = True
     outbox_retry_interval_seconds: float = 5.0
     outbox_retry_batch_size: int = 100
+    outbox_retry_delay_seconds: float = 30.0
+    outbox_max_attempts: int = 3
     max_inflight_per_tenant: int = 100
     inflight_table: str = "tenant-inflight"
 
@@ -43,6 +45,8 @@ class AppSettings:
             outbox_retry_enabled=os.getenv("LUCIUS_OUTBOX_RETRY_ENABLED", "true").lower() == "true",
             outbox_retry_interval_seconds=float(os.getenv("LUCIUS_OUTBOX_RETRY_INTERVAL", "5.0")),
             outbox_retry_batch_size=int(os.getenv("LUCIUS_OUTBOX_RETRY_BATCH_SIZE", "100")),
+            outbox_retry_delay_seconds=float(os.getenv("LUCIUS_OUTBOX_RETRY_DELAY", "30.0")),
+            outbox_max_attempts=int(os.getenv("LUCIUS_OUTBOX_MAX_ATTEMPTS", "3")),
             max_inflight_per_tenant=int(os.getenv("LUCIUS_MAX_INFLIGHT_PER_TENANT", "100")),
             inflight_table=os.getenv("LUCIUS_INFLIGHT_TABLE", "tenant-inflight"),
         )
