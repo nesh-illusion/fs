@@ -8,22 +8,6 @@ services:
     environment:
       LUCIUS_STORAGE_BACKEND: "memory"
 
-  lucius-dispatcher-0:
-    build:
-      context: .
-      dockerfile: services/lucius-dispatcher/Dockerfile
-    environment:
-      LUCIUS_STORAGE_BACKEND: "memory"
-    command: ["lucius-reconciliation", "loop", "--shard-index", "0", "--shard-count", "2", "--interval", "5"]
-
-  lucius-dispatcher-1:
-    build:
-      context: .
-      dockerfile: services/lucius-dispatcher/Dockerfile
-    environment:
-      LUCIUS_STORAGE_BACKEND: "memory"
-    command: ["lucius-reconciliation", "loop", "--shard-index", "1", "--shard-count", "2", "--interval", "5"]
-
   vector-ingestion:
     build:
       context: .
@@ -48,8 +32,6 @@ services:
       TMPDIR: "/tmp"
     depends_on:
       - lucius-orchestrator
-      - lucius-dispatcher-0
-      - lucius-dispatcher-1
       - distributed-ocr
       - vector-ingestion
       - semantic-intelligence

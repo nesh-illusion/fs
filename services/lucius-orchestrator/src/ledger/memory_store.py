@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from .interfaces import IdempotencyStore, JobIndexStore, JobsStore, OutboxStore, StepsStore, TenantInflightStore
@@ -87,7 +88,14 @@ class MemoryOutboxStore(OutboxStore):
         entry = self._entries.get(outbox_id)
         if entry is None or entry.etag != etag:
             raise ValueError("etag mismatch")
-        updated = replace(entry, state="SENT", etag=str(int(etag) + 1))
+        now = datetime.now(timezone.utc).isoformat()
+        updated = replace(
+            entry,
+            state="SENT",
+            sent_at=now,
+            updated_at=now,
+            etag=str(int(etag) + 1),
+        )
         self._entries[outbox_id] = updated
         return updated
 

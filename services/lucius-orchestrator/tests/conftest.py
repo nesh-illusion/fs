@@ -8,7 +8,6 @@ SERVICES_ROOT = SERVICE_ROOT.parent
 
 paths = [
     SERVICE_ROOT / "src",
-    SERVICES_ROOT / "lucius-dispatcher" / "src",
     SERVICES_ROOT / "distributed-ocr" / "src",
     SERVICES_ROOT,
 ]

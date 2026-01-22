@@ -1,5 +1,7 @@
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 from uuid import uuid4
 import zlib
 
@@ -21,14 +23,16 @@ from ledger.table_storage import (
     TableIdempotencyStore,
     TableJobIndexStore,
     TableJobsStore,
+    TableLedgerJobsStore,
+    TableLedgerOutboxStore,
+    TableLedgerStepsStore,
     TableOutboxStore,
     TableStepsStore,
     TableTenantInflightStore,
 )
+from outbox.publisher import AsyncServiceBusPublisher, Publisher
 from validation.idempotency import idempotency_hash
 from validation.validator import SchemaValidator
-from worker.service import ReconciliationConfig, ReconciliationService
-from store.stores import build_stores as build_recon_stores
 from shared.logging import get_logger, log_event
 
 try:
@@ -80,6 +84,18 @@ def _routing_decision(envelope: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _outbox_partitions(settings: AppSettings, count: int = 16) -> Iterable[str]:
+    if settings.storage_backend == "ledger":
+        return ["*"]
+    return [f"p{lane}" for lane in range(count)]
+
+
+def _outbox_partition_key(settings: AppSettings, job_id: str, routing: Dict[str, Any]) -> str:
+    if settings.storage_backend == "ledger":
+        return job_id
+    return f"p{routing['lane']}"
+
+
 def _build_stores(settings: AppSettings):
     if settings.storage_backend == "memory":
         return (
@@ -91,7 +107,7 @@ def _build_stores(settings: AppSettings):
             MemoryTenantInflightStore(),
         )
 
-    if settings.storage_backend != "table":
+    if settings.storage_backend not in {"table", "ledger"}:
         raise RuntimeError(f"Unsupported storage backend: {settings.storage_backend}")
 
     if not settings.table_connection_string:
@@ -100,6 +116,16 @@ def _build_stores(settings: AppSettings):
     from azure.data.tables import TableServiceClient
 
     service_client = TableServiceClient.from_connection_string(settings.table_connection_string)
+    if settings.storage_backend == "ledger":
+        ledger_table = service_client.get_table_client(settings.ledger_table)
+        return (
+            TableLedgerJobsStore(ledger_table),
+            TableLedgerStepsStore(ledger_table),
+            TableLedgerOutboxStore(ledger_table),
+            TableIdempotencyStore(service_client, settings.idempotency_table),
+            TableJobIndexStore(service_client, settings.job_index_table),
+            TableTenantInflightStore(service_client, settings.inflight_table),
+        )
     return (
         TableJobsStore(service_client, settings.jobs_table),
         TableStepsStore(service_client, settings.steps_table),
@@ -110,32 +136,130 @@ def _build_stores(settings: AppSettings):
     )
 
 
-def _build_lucius_dispatcher(settings: AppSettings):
-    jobs_store, steps_store, outbox_store, _, _, _ = build_recon_stores(settings)
-    return ReconciliationService(jobs_store, steps_store, outbox_store, ReconciliationConfig())
-
-
 def _find_step(steps: list[Step], step_id: str) -> Step | None:
     return next((step for step in steps if step.step_id == step_id), None)
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="LUCIUS Orchestrator")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if settings.outbox_retry_enabled:
+            app.state.outbox_retry_task = asyncio.create_task(_retry_loop())
+        try:
+            yield
+        finally:
+            task = getattr(app.state, "outbox_retry_task", None)
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    app = FastAPI(title="LUCIUS Orchestrator", lifespan=lifespan)
     logger = get_logger("lucius_orchestrator")
 
     settings = AppSettings.from_env()
     validator = SchemaValidator()
     registry = ProtocolRegistry()
     jobs_store, steps_store, outbox_store, idempotency_store, job_index_store, inflight_store = _build_stores(settings)
-    reconciliation = _build_lucius_dispatcher(settings)
+    publisher: Publisher | None = None
+    if settings.service_bus_connection:
+        publisher = AsyncServiceBusPublisher(
+            settings.service_bus_connection,
+            settings.outbox_publish_timeout_seconds,
+        )
     app.state.jobs_store = jobs_store
     app.state.steps_store = steps_store
     app.state.outbox_store = outbox_store
     app.state.idempotency_store = idempotency_store
     app.state.job_index_store = job_index_store
     app.state.inflight_store = inflight_store
+    app.state.outbox_publisher = publisher
     app.state.registry = registry
     app.state.validator = validator
+
+    async def _publish_entry(entry: OutboxEntry) -> bool:
+        if publisher is None:
+            return False
+        try:
+            log_event(
+                logger,
+                "outbox.publish",
+                outbox_id=entry.outbox_id,
+                job_id=entry.job_id,
+                step_id=entry.step_id,
+                tenant_id=entry.tenant_id,
+                topic=entry.topic,
+                partition=entry.partition,
+                attempt_no=entry.attempt_no,
+                lease_id=entry.lease_id,
+            )
+            await publisher.publish(entry)
+        except Exception as exc:
+            log_event(
+                logger,
+                "outbox.publish.failed",
+                outbox_id=entry.outbox_id,
+                job_id=entry.job_id,
+                step_id=entry.step_id,
+                tenant_id=entry.tenant_id,
+                error=str(exc),
+            )
+            return False
+        return True
+
+    def _mark_publish_success(entry: OutboxEntry, job: Job | None, step: Step | None) -> None:
+        marked_entry = entry
+        if entry.etag is None:
+            pending = outbox_store.list_pending(entry.tenant_bucket, settings.outbox_retry_batch_size)
+            marked_entry = next((item for item in pending if item.outbox_id == entry.outbox_id), entry)
+        outbox_store.mark_sent(marked_entry.outbox_id, marked_entry.tenant_bucket, marked_entry.etag or "")
+        log_event(
+            logger,
+            "outbox.sent",
+            outbox_id=marked_entry.outbox_id,
+            job_id=marked_entry.job_id,
+            step_id=marked_entry.step_id,
+            tenant_id=marked_entry.tenant_id,
+            topic=marked_entry.topic,
+            partition=marked_entry.partition,
+        )
+        now = _now_iso()
+        if step and step.state in {"DISPATCHING", "PENDING"}:
+            step.state = "INITIATED"
+            step.updated_at = now
+            steps_store.update_step(step, step.etag or "")
+        if job and job.state in {"QUEUED", "DISPATCHING"}:
+            if job.etag is None:
+                index = job_index_store.get(job.job_id)
+                if index:
+                    job = jobs_store.get_job(job.job_id, job.tenant_id, index.tenant_bucket) or job
+            job.state = "IN_PROGRESS"
+            job.updated_at = now
+            jobs_store.update_job(job, job.etag or "")
+
+    async def _retry_pending_outbox() -> None:
+        if publisher is None:
+            return
+        for partition in _outbox_partitions(settings):
+            entries = outbox_store.list_pending(partition, settings.outbox_retry_batch_size)
+            for entry in entries:
+                if await _publish_entry(entry):
+                    index = job_index_store.get(entry.job_id)
+                    if index is None:
+                        continue
+                    job = jobs_store.get_job(entry.job_id, entry.tenant_id, index.tenant_bucket)
+                    step = _find_step(steps_store.get_steps(entry.job_id), entry.step_id)
+                    _mark_publish_success(entry, job, step)
+
+    async def _retry_loop() -> None:
+        while True:
+            try:
+                await _retry_pending_outbox()
+            except Exception as exc:
+                log_event(logger, "outbox.retry.failed", error=str(exc))
+            await asyncio.sleep(settings.outbox_retry_interval_seconds)
 
     @app.post("/v1/commands")
     async def create_command(envelope: Dict[str, Any]):
@@ -277,7 +401,7 @@ def create_app() -> FastAPI:
                 )
             steps_store.create_steps(job_id, steps)
 
-            outbox_partition = f"p{routing['lane']}"
+            outbox_partition = _outbox_partition_key(settings, job_id, routing)
             outbox = OutboxEntry(
                 outbox_id=uuid4().hex,
                 tenant_id=envelope["tenant_id"],
@@ -315,7 +439,7 @@ def create_app() -> FastAPI:
                 sent_at=None,
                 updated_at=created_at,
             )
-            outbox_store.create_outbox(outbox)
+            outbox_entry = outbox_store.create_outbox(outbox)
             log_event(
                 logger,
                 "outbox.created",
@@ -348,6 +472,19 @@ def create_app() -> FastAPI:
                     created_at=created_at,
                 )
             )
+
+            if publisher is None:
+                log_event(
+                    logger,
+                    "outbox.publish.skipped",
+                    outbox_id=outbox_entry.outbox_id,
+                    job_id=job_id,
+                    tenant_id=envelope["tenant_id"],
+                    reason="missing_service_bus",
+                )
+            elif await _publish_entry(outbox_entry):
+                step = _find_step(steps_store.get_steps(job_id), protocol.steps[0].step_id)
+                _mark_publish_success(outbox_entry, job, step)
 
             return JSONResponse(status_code=202, content={"jobId": job_id})
         except Exception:
@@ -385,12 +522,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="step not found")
         if step.attempt_no != attempt_no or step.lease_id != lease_id:
             raise HTTPException(status_code=409, detail="attempt/lease mismatch")
-        if step.state != "AWAITING_ACK":
+        if step.state not in {"INITIATED", "PROCESSING", "IN_PROGRESS"}:
             raise HTTPException(status_code=409, detail="invalid step state")
 
-        step.state = "IN_PROGRESS"
-        step.updated_at = _now_iso()
-        steps_store.update_step(step, step.etag or "")
+        if step.state == "INITIATED":
+            step.state = "PROCESSING"
+            step.updated_at = _now_iso()
+            steps_store.update_step(step, step.etag or "")
 
         if job.state in {"QUEUED", "DISPATCHING"}:
             job.state = "IN_PROGRESS"
@@ -443,7 +581,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="step not found")
         if step.attempt_no != attempt_no or step.lease_id != lease_id:
             raise HTTPException(status_code=409, detail="attempt/lease mismatch")
-        if step.state != "IN_PROGRESS":
+        if step.state not in {"INITIATED", "PROCESSING", "IN_PROGRESS"}:
             raise HTTPException(status_code=409, detail="invalid step state")
 
         now = _now_iso()
@@ -521,34 +659,27 @@ def create_app() -> FastAPI:
             if settings.admin_api_key and key != settings.admin_api_key:
                 raise HTTPException(status_code=401, detail="unauthorized")
 
-        @app.post("/v1/admin/reconcile/dispatch")
-        async def admin_dispatch(
-            partition_key: str,
+        @app.post("/v1/admin/outbox/retry")
+        async def admin_outbox_retry(
+            partition_key: str | None = None,
             limit: int = 100,
             x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
         ):
             _require_admin(x_admin_key)
-            reconciliation._config.outbox_batch_size = limit
-            if settings.admin_publish_enabled:
-                from worker.publisher import ServiceBusPublisher
-                if not settings.service_bus_connection:
-                    raise HTTPException(status_code=500, detail="missing service bus connection")
-                publisher = ServiceBusPublisher(settings.service_bus_connection)
-            else:
-                from worker.publisher import NoopPublisher
-                publisher = NoopPublisher()
-            reconciliation.dispatch_partition(partition_key, publisher)
-            return {"status": "ok"}
+            if publisher is None:
+                raise HTTPException(status_code=500, detail="missing service bus connection")
 
-        @app.post("/v1/admin/reconcile/sweep")
-        async def admin_sweep(
-            job_id: str,
-            tenant_id: str,
-            tenant_bucket: str,
-            x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-        ):
-            _require_admin(x_admin_key)
-            reconciliation.sweep_job(job_id, tenant_id, tenant_bucket)
+            partitions = [partition_key] if partition_key else list(_outbox_partitions(settings))
+            for partition in partitions:
+                entries = outbox_store.list_pending(partition, limit)
+                for entry in entries:
+                    if await _publish_entry(entry):
+                        index = job_index_store.get(entry.job_id)
+                        if index is None:
+                            continue
+                        job = jobs_store.get_job(entry.job_id, entry.tenant_id, index.tenant_bucket)
+                        step = _find_step(steps_store.get_steps(entry.job_id), entry.step_id)
+                        _mark_publish_success(entry, job, step)
             return {"status": "ok"}
 
     return app

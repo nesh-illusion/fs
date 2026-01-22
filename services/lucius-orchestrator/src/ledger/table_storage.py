@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .interfaces import IdempotencyStore, JobIndexStore, JobsStore, OutboxStore, StepsStore, TenantInflightStore
@@ -274,7 +275,10 @@ class TableOutboxStore(OutboxStore):
 
     def mark_sent(self, outbox_id: str, partition_key: str, etag: str) -> OutboxEntry:
         entity = self._table.get_entity(partition_key=partition_key, row_key=outbox_id)
+        now = datetime.now(timezone.utc).isoformat()
         entity["state"] = "SENT"
+        entity["sent_at"] = now
+        entity["updated_at"] = now
         self._table.update_entity(entity, mode=UpdateMode.REPLACE, etag=etag)
         return OutboxEntry(
             outbox_id=entity["RowKey"],
@@ -407,3 +411,250 @@ class TableTenantInflightStore(TenantInflightStore):
             except Exception:
                 continue
         raise TableStorageError("failed to release inflight slot after retries")
+
+
+class TableLedgerJobsStore(JobsStore):
+    def __init__(self, table_client) -> None:
+        _require_sdk()
+        self._table = table_client
+
+    def create_job(self, job: Job) -> Job:
+        entity = _job_entity(job)
+        entity["PartitionKey"] = job.job_id
+        entity["RowKey"] = "JOB"
+        self._table.create_entity(entity)
+        return replace(job, etag=None)
+
+    def get_job(self, job_id: str, tenant_id: str, tenant_bucket: Optional[str] = None) -> Optional[Job]:
+        try:
+            entity = self._table.get_entity(partition_key=job_id, row_key="JOB")
+        except Exception:
+            return None
+        return _job_from_entity(entity)
+
+    def update_job(self, job: Job, etag: str) -> Job:
+        entity = _job_entity(job)
+        entity["PartitionKey"] = job.job_id
+        entity["RowKey"] = "JOB"
+        self._table.update_entity(entity, mode=UpdateMode.REPLACE, etag=etag)
+        return replace(job, etag=None)
+
+    def find_by_idempotency(self, tenant_id: str, idempotency_hash: str) -> Optional[str]:
+        raise TableStorageError("use IdempotencyStore for idempotency lookups")
+
+
+class TableLedgerStepsStore(StepsStore):
+    def __init__(self, table_client) -> None:
+        _require_sdk()
+        self._table = table_client
+
+    def create_steps(self, job_id: str, steps: List[Step]) -> None:
+        for step in steps:
+            entity = {
+                "PartitionKey": job_id,
+                "RowKey": f"STEP#{step.step_index:04d}#{step.step_id}",
+                "step_index": step.step_index,
+                "step_id": step.step_id,
+                "step_type": step.step_type,
+                "service": step.service,
+                "state": step.state,
+                "attempt_no": step.attempt_no,
+                "lease_id": step.lease_id,
+                "lease_expires_at": step.lease_expires_at,
+                "input_ref": step.input_ref,
+                "workspace_ref": step.workspace_ref,
+                "output_ref": step.output_ref,
+                "payload": step.payload,
+                "resolved_mode": step.resolved_mode,
+                "lane": step.lane,
+                "routing_key_used": step.routing_key_used,
+                "decision_source": step.decision_source,
+                "decision_reason": step.decision_reason,
+                "last_error_code": step.last_error_code,
+                "last_error_message": step.last_error_message,
+                "created_at": step.created_at,
+                "updated_at": step.updated_at,
+                "completed_at": step.completed_at,
+            }
+            self._table.create_entity(entity)
+
+    def get_steps(self, job_id: str) -> List[Step]:
+        prefix_start = "STEP#"
+        prefix_end = "STEP$"
+        entities = self._table.query_entities(
+            f"PartitionKey eq '{job_id}' and RowKey ge '{prefix_start}' and RowKey lt '{prefix_end}'"
+        )
+        steps: List[Step] = []
+        for entity in entities:
+            steps.append(
+                Step(
+                    job_id=job_id,
+                    step_index=entity.get("step_index", 0),
+                    step_id=entity["step_id"],
+                    step_type=entity["step_type"],
+                    service=entity["service"],
+                    state=entity["state"],
+                    attempt_no=entity.get("attempt_no", 0),
+                    lease_id=entity.get("lease_id", ""),
+                    lease_expires_at=entity.get("lease_expires_at", ""),
+                    input_ref=entity.get("input_ref"),
+                    workspace_ref=entity.get("workspace_ref"),
+                    output_ref=entity.get("output_ref"),
+                    payload=entity.get("payload", {}),
+                    resolved_mode=entity.get("resolved_mode", "DEFAULT"),
+                    lane=entity.get("lane", 0),
+                    routing_key_used=entity.get("routing_key_used", ""),
+                    decision_source=entity.get("decision_source", "UNKNOWN"),
+                    decision_reason=entity.get("decision_reason", ""),
+                    last_error_code=entity.get("last_error_code"),
+                    last_error_message=entity.get("last_error_message"),
+                    created_at=entity["created_at"],
+                    updated_at=entity["updated_at"],
+                    completed_at=entity.get("completed_at"),
+                    etag=entity.get("etag") or entity.get("odata.etag"),
+                )
+            )
+        return sorted(steps, key=lambda step: step.step_index)
+
+    def get_active_step(self, job_id: str) -> Optional[Step]:
+        steps = self.get_steps(job_id)
+        for step in steps:
+            if step.state not in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
+                return step
+        return None
+
+    def update_step(self, step: Step, etag: str) -> Step:
+        entity = {
+            "PartitionKey": step.job_id,
+            "RowKey": f"STEP#{step.step_index:04d}#{step.step_id}",
+            "step_index": step.step_index,
+            "step_id": step.step_id,
+            "step_type": step.step_type,
+            "service": step.service,
+            "state": step.state,
+            "attempt_no": step.attempt_no,
+            "lease_id": step.lease_id,
+            "lease_expires_at": step.lease_expires_at,
+            "input_ref": step.input_ref,
+            "workspace_ref": step.workspace_ref,
+            "output_ref": step.output_ref,
+            "payload": step.payload,
+            "resolved_mode": step.resolved_mode,
+            "lane": step.lane,
+            "routing_key_used": step.routing_key_used,
+            "decision_source": step.decision_source,
+            "decision_reason": step.decision_reason,
+            "last_error_code": step.last_error_code,
+            "last_error_message": step.last_error_message,
+            "created_at": step.created_at,
+            "updated_at": step.updated_at,
+            "completed_at": step.completed_at,
+        }
+        self._table.update_entity(entity, mode=UpdateMode.REPLACE, etag=etag)
+        return replace(step, etag=None)
+
+
+class TableLedgerOutboxStore(OutboxStore):
+    def __init__(self, table_client) -> None:
+        _require_sdk()
+        self._table = table_client
+
+    def create_outbox(self, entry: OutboxEntry) -> OutboxEntry:
+        entity = {
+            "PartitionKey": entry.tenant_bucket,
+            "RowKey": f"OUTBOX#{entry.outbox_id}",
+            "jobId": entry.job_id,
+            "stepId": entry.step_id,
+            "tenant_id": entry.tenant_id,
+            "tenant_bucket": entry.tenant_bucket,
+            "attempt_no": entry.attempt_no,
+            "lease_id": entry.lease_id,
+            "state": entry.state,
+            "topic": entry.topic,
+            "partition": entry.partition,
+            "payload": entry.payload,
+            "resolved_mode": entry.resolved_mode,
+            "lane": entry.lane,
+            "routing_key_used": entry.routing_key_used,
+            "decision_source": entry.decision_source,
+            "decision_reason": entry.decision_reason,
+            "created_at": entry.created_at,
+            "sent_at": entry.sent_at,
+            "updated_at": entry.updated_at,
+        }
+        self._table.create_entity(entity)
+        return replace(entry, etag=None)
+
+    def list_pending(self, partition_key: str, limit: int) -> List[OutboxEntry]:
+        prefix_start = "OUTBOX#"
+        prefix_end = "OUTBOX$"
+        if partition_key and partition_key != "*":
+            query = (
+                f"PartitionKey eq '{partition_key}' and state eq 'PENDING' "
+                f"and RowKey ge '{prefix_start}' and RowKey lt '{prefix_end}'"
+            )
+        else:
+            query = (
+                f"state eq 'PENDING' and RowKey ge '{prefix_start}' and RowKey lt '{prefix_end}'"
+            )
+        entities = self._table.query_entities(query)
+        entries: List[OutboxEntry] = []
+        for entity in entities:
+            entries.append(
+                OutboxEntry(
+                    outbox_id=entity["RowKey"].split("#", 1)[1],
+                    tenant_id=entity.get("tenant_id", entity["PartitionKey"]),
+                    tenant_bucket=entity.get("tenant_bucket", entity["PartitionKey"]),
+                    job_id=entity["jobId"],
+                    step_id=entity["stepId"],
+                    attempt_no=entity.get("attempt_no", 0),
+                    lease_id=entity.get("lease_id", ""),
+                    state=entity["state"],
+                    topic=entity.get("topic", ""),
+                    partition=entity.get("partition", ""),
+                    payload=entity.get("payload", {}),
+                    resolved_mode=entity.get("resolved_mode", "DEFAULT"),
+                    lane=entity.get("lane", 0),
+                    routing_key_used=entity.get("routing_key_used", ""),
+                    decision_source=entity.get("decision_source", "UNKNOWN"),
+                    decision_reason=entity.get("decision_reason", ""),
+                    created_at=entity["created_at"],
+                    sent_at=entity.get("sent_at"),
+                    updated_at=entity["updated_at"],
+                    etag=entity.get("etag") or entity.get("odata.etag"),
+                )
+            )
+            if len(entries) >= limit:
+                break
+        return entries
+
+    def mark_sent(self, outbox_id: str, partition_key: str, etag: str) -> OutboxEntry:
+        row_key = f"OUTBOX#{outbox_id}"
+        entity = self._table.get_entity(partition_key=partition_key, row_key=row_key)
+        now = datetime.now(timezone.utc).isoformat()
+        entity["state"] = "SENT"
+        entity["sent_at"] = now
+        entity["updated_at"] = now
+        self._table.update_entity(entity, mode=UpdateMode.REPLACE, etag=etag)
+        return OutboxEntry(
+            outbox_id=outbox_id,
+            tenant_id=entity.get("tenant_id", entity["PartitionKey"]),
+            tenant_bucket=entity.get("tenant_bucket", entity["PartitionKey"]),
+            job_id=entity["jobId"],
+            step_id=entity["stepId"],
+            attempt_no=entity.get("attempt_no", 0),
+            lease_id=entity.get("lease_id", ""),
+            state=entity["state"],
+            topic=entity.get("topic", ""),
+            partition=entity.get("partition", ""),
+            payload=entity.get("payload", {}),
+            resolved_mode=entity.get("resolved_mode", "DEFAULT"),
+            lane=entity.get("lane", 0),
+            routing_key_used=entity.get("routing_key_used", ""),
+            decision_source=entity.get("decision_source", "UNKNOWN"),
+            decision_reason=entity.get("decision_reason", ""),
+            created_at=entity["created_at"],
+            sent_at=entity.get("sent_at"),
+            updated_at=entity["updated_at"],
+            etag=entity.get("etag") or entity.get("odata.etag"),
+        )

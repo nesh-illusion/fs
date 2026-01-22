@@ -67,9 +67,6 @@ Planned work:
 - ACK sweeper moves AWAITING_ACK -> FAILED_RETRY
 - Lease sweeper moves IN_PROGRESS -> FAILED_RETRY or FAILED_FINAL
 - Drift sweeper fixes stuck DISPATCHING/OUTBOX
-  - In progress: services/lucius-dispatcher/src/worker/dispatcher.py, services/lucius-dispatcher/src/worker/sweepers.py, services/lucius-dispatcher/src/worker/service.py
-  - In progress: services/lucius-dispatcher/src/worker/runner.py, services/lucius-dispatcher/src/worker/publisher.py, admin endpoints in services/lucius-orchestrator/src/api/app.py, services/lucius-orchestrator/src/config/settings.py
-  - In progress: services/lucius-dispatcher/src/*
 
 ## Phase 4 — Bus + Platform Skeleton (done)
 Exit criteria:

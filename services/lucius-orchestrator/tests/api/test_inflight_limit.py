@@ -2,8 +2,6 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from worker.dispatcher import OutboxDispatcher
-from worker.publisher import NoopPublisher
 from api.app import create_app
 
 
@@ -32,17 +30,25 @@ def _create_command(client: TestClient, payload: dict) -> str:
     return response.json()["jobId"]
 
 
-def _dispatch_once(app, job_id: str):
+def _publish_once(app, job_id: str):
     entries = [
         entry for entry in app.state.outbox_store._entries.values()
         if entry.job_id == job_id
     ]
     assert entries
-    partition_key = entries[0].tenant_bucket
-    dispatcher = OutboxDispatcher(app.state.outbox_store, app.state.steps_store)
-    dispatcher.dispatch_once(partition_key, 10, NoopPublisher())
-    assert len(entries) == 1
-    return entries[0]
+    entry = entries[0]
+    updated = app.state.outbox_store.mark_sent(entry.outbox_id, entry.tenant_bucket, entry.etag or "")
+    steps = app.state.steps_store.get_steps(job_id)
+    step = next(step for step in steps if step.step_id == entry.step_id)
+    step.state = "INITIATED"
+    step.updated_at = _now_iso()
+    app.state.steps_store.update_step(step, step.etag or "")
+    index = app.state.job_index_store.get(job_id)
+    job = app.state.jobs_store.get_job(job_id, entry.tenant_id, index.tenant_bucket)
+    job.state = "IN_PROGRESS"
+    job.updated_at = _now_iso()
+    app.state.jobs_store.update_job(job, job.etag or "")
+    return updated
 
 
 def _complete_job(client: TestClient, outbox_entry) -> None:
@@ -79,7 +85,7 @@ def test_inflight_limit_enforced(monkeypatch):
     response = client.post("/v1/commands", json=_base_payload("t1", "in-2"))
     assert response.status_code == 429
 
-    outbox = _dispatch_once(app, job1)
+    outbox = _publish_once(app, job1)
     _complete_job(client, outbox)
 
     job3 = _create_command(client, _base_payload("t1", "in-3"))
