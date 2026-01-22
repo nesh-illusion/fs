@@ -8,12 +8,13 @@
 5) Compute routing decision:
    - Normalize tenant/doc_id, choose lane with CRC32 mod 16.
 6) Create Job + Steps + Outbox entry.
-7) Publish to Service Bus (async).
-8) On publish success (publish → update flow):
+7) Return `202` with `jobId`.
+8) Publish to Service Bus in background (publish → update flow).
+9) On publish success:
    - Outbox → `SENT`
    - Step → `INITIATED` (step row updated in DB)
    - Job → `IN_PROGRESS`
-9) On publish failure:
+10) On publish failure:
    - Outbox remains `PENDING`
    - Retry loop handles later.
 

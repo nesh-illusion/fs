@@ -406,6 +406,28 @@ def create_app() -> FastAPI:
     async def _retry_pending_outbox() -> None:
         await _process_pending_outbox(_outbox_partitions(settings), settings.outbox_retry_batch_size)
 
+    async def _publish_outbox_background(entry: OutboxEntry, tenant_id: str) -> None:
+        try:
+            if await _publish_entry(entry):
+                index = job_index_store.get(entry.job_id)
+                if index is None:
+                    return
+                job = jobs_store.get_job(entry.job_id, tenant_id, index.tenant_bucket)
+                step = _find_step(steps_store.get_steps(entry.job_id), entry.step_id)
+                _mark_publish_success(entry, job, step)
+            else:
+                _schedule_retry(entry)
+        except Exception as exc:
+            log_event(
+                logger,
+                "outbox.publish.background_failed",
+                outbox_id=entry.outbox_id,
+                job_id=entry.job_id,
+                step_id=entry.step_id,
+                tenant_id=tenant_id,
+                error=str(exc),
+            )
+
     async def _retry_loop() -> None:
         while True:
             try:
@@ -637,11 +659,8 @@ def create_app() -> FastAPI:
                     reason="missing_service_bus",
                 )
                 _schedule_retry(outbox_entry)
-            elif await _publish_entry(outbox_entry):
-                step = _find_step(steps_store.get_steps(job_id), protocol.steps[0].step_id)
-                _mark_publish_success(outbox_entry, job, step)
             else:
-                _schedule_retry(outbox_entry)
+                asyncio.create_task(_publish_outbox_background(outbox_entry, envelope["tenant_id"]))
 
             return JSONResponse(status_code=202, content={"jobId": job_id})
         except Exception:
