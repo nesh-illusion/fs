@@ -15,17 +15,17 @@ Work completed:
   - lease_id: UUIDv4
   - failure_class rules locked
 - Contract schemas:
-  - docs/contracts/command-envelope.v1.schema.json
-  - docs/contracts/directive.v1.schema.json
-  - docs/contracts/ack.v1.schema.json
-  - docs/contracts/result.v1.schema.json
+  - services/lucius-orchestrator/src/contracts/command-envelope.v1.schema.json
+  - services/lucius-orchestrator/src/contracts/directive.v1.schema.json
+  - services/lucius-orchestrator/src/contracts/ack.v1.schema.json
+  - services/lucius-orchestrator/src/contracts/result.v1.schema.json
 - Protocol registry:
-  - docs/protocols/protocol-registry.v1.schema.json
-  - docs/protocols/protocol-registry.v1.example.json
+  - services/lucius-orchestrator/src/protocols/protocol-registry.v1.schema.json
+  - services/lucius-orchestrator/src/protocols/protocol-registry.v1.example.json
 - Step payload schemas:
-  - docs/schemas/steps/ocr.v1.json
-  - docs/schemas/steps/embedding.v1.json
-  - docs/schemas/steps/sis.v1.json
+  - services/lucius-orchestrator/src/schemas/steps/ocr.v1.json
+  - services/lucius-orchestrator/src/schemas/steps/embedding.v1.json
+  - services/lucius-orchestrator/src/schemas/steps/sis.v1.json
 
 ## Phase 1 — Ledger + State Machine (done)
 Exit criteria:

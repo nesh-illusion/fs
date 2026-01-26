@@ -5,13 +5,13 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
-def docs_root() -> Path:
-    return project_root() / "docs"
-
-
 def contracts_root() -> Path:
-    return docs_root() / "contracts"
+    return Path(__file__).resolve().parents[1] / "contracts"
 
 
 def step_schema_root() -> Path:
-    return docs_root() / "schemas" / "steps"
+    return Path(__file__).resolve().parents[1] / "schemas" / "steps"
+
+
+def protocols_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "protocols"

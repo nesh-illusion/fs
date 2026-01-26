@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from config.paths import docs_root
+from config.paths import protocols_root
 
 
 @dataclass
@@ -23,7 +23,7 @@ class Protocol:
 
 class ProtocolRegistry:
     def __init__(self, registry_path: Optional[Path] = None):
-        self.registry_path = registry_path or (docs_root() / "protocols" / "protocol-registry.v1.example.json")
+        self.registry_path = registry_path or (protocols_root() / "protocol-registry.v1.example.json")
         self._by_request_type: Dict[str, Protocol] = {}
         self._load()
 
