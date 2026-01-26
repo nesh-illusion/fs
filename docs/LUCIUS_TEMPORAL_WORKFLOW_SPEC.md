@@ -215,6 +215,78 @@ Late or stale callbacks are recorded but do not mutate terminal states.
 
 ## 10) Temporal Design
 
+### 10.0 Deployment Model
+- Same codebase/image, different runtime roles (production standard for Temporal: separate API and worker processes for isolation and independent scaling).
+- `lucius-orchestrator`: API Deployment + Service + HPA (if needed).
+- `lucius-temporal-worker`: Worker Deployment + HPA (if needed).
+- Both connect to the Temporal server; only the worker polls the task queue and runs workflows/activities.
+
+### 10.0.1 Kubernetes Notes
+- Use two Deployments (API + Worker) with the same image but different commands.
+- API gets a Service; Worker does not need one unless you expose metrics.
+- Scale independently (API by request load; Worker by workflow/activity throughput).
+
+Example (minimal, schematic):
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lucius-orchestrator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: lucius-orchestrator
+  template:
+    metadata:
+      labels:
+        app: lucius-orchestrator
+    spec:
+      containers:
+        - name: api
+          image: lucius/lucius-orchestrator:local
+          command: ["uvicorn", "api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: LUCIUS_TEMPORAL_ADDRESS
+              value: temporal:7233
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lucius-orchestrator
+spec:
+  selector:
+    app: lucius-orchestrator
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lucius-temporal-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: lucius-temporal-worker
+  template:
+    metadata:
+      labels:
+        app: lucius-temporal-worker
+    spec:
+      containers:
+        - name: worker
+          image: lucius/lucius-orchestrator:local
+          command: ["python", "-m", "temporal_worker.main"]
+          env:
+            - name: LUCIUS_TEMPORAL_ADDRESS
+              value: temporal:7233
+            - name: LUCIUS_ORCHESTRATOR_URL
+              value: http://lucius-orchestrator:8000
+```
+
 ### 10.1 Workflow Inputs
 - `jobId`, `tenant_id`, `protocol_id`
 - `steps[]` (id, type, service, payload, refs)

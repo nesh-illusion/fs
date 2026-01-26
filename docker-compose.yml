@@ -15,16 +15,28 @@ services:
     build:
       context: .
       dockerfile: services/vector-ingestion/Dockerfile
+    environment:
+      SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
+      SERVICEBUS_TOPIC: "global-bus-p0"
+      SERVICEBUS_SUBSCRIPTION: "vector-ingestion"
 
   distributed-ocr:
     build:
       context: .
       dockerfile: services/distributed-ocr/Dockerfile
+    environment:
+      SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
+      SERVICEBUS_TOPIC: "global-bus-p0"
+      SERVICEBUS_SUBSCRIPTION: "distributed-ocr"
 
   semantic-intelligence:
     build:
       context: .
       dockerfile: services/semantic-intelligence/Dockerfile
+    environment:
+      SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
+      SERVICEBUS_TOPIC: "global-bus-p0"
+      SERVICEBUS_SUBSCRIPTION: "semantic-intelligence"
 
   lucius-temporal-worker:
     build:
@@ -32,6 +44,7 @@ services:
       dockerfile: services/lucius-orchestrator/Dockerfile
     command: ["python", "-m", "temporal_worker.main"]
     environment:
+      LUCIUS_SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
       LUCIUS_TEMPORAL_ADDRESS: "temporal:7233"
       LUCIUS_TEMPORAL_NAMESPACE: "default"
       LUCIUS_TEMPORAL_TASK_QUEUE: "lucius"
