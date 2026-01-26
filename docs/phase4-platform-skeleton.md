@@ -6,17 +6,20 @@
 - Message body: directive JSON schema v1
 
 ## Platform skeleton
-Location: `services/lucius-orchestrator/platform_skeleton/`
-- `directive_model.py`: directive parsing
-- `consumer.py`: main handler + execute hook
-- `idempotency_store.py`: idempotency gating
-- `ack_client.py`: ACK callback
-- `result_client.py`: RESULT callback
-- `workspace_io.py`: blob workspace helpers (placeholder)
-- `error_model.py`: error types
-- `health.py`: health check stub
+Location: service-specific skeletons in:
+- `services/distributed-ocr/src/consumer/`
+- `services/vector-ingestion/src/consumer/`
+- `services/semantic-intelligence/src/consumer/`
+
+Common pieces in each service:
+- `models/directive_model.py`: directive parsing
+- `consumer/__init__.py`: main handler + execute hook
+- `idempotency/store.py`: idempotency gating
+- `clients/ack_client.py`: ACK callback
+- `clients/result_client.py`: RESULT callback
+- `models/error_model.py`: error types
 
 ## Next steps
 - Replace MemoryIdempotencyStore with a durable store (Table/Blob/Redis).
 - Implement real Service Bus consumer.
-- Implement `workspace_io` against Blob Storage.
+- Implement workspace storage helpers against Blob Storage.

@@ -57,7 +57,9 @@ curl -s -X POST http://localhost:8000/v1/commands \
 ```bash
 curl -s "http://localhost:8000/v1/jobs/<jobId>?tenant_id=t1"
 curl -s "http://localhost:8000/v1/jobs/<jobId>/steps"
+curl -s "http://localhost:8000/v1/jobs/<jobId>/steps?step_id=<stepId>"
 ```
+`GET /v1/jobs/<jobId>` returns job state plus a collated list of steps.
 
 ## Partition lane visibility
 1) Logs:
@@ -73,17 +75,17 @@ curl -s "http://localhost:8000/v1/jobs/<jobId>/steps"
 Check `lane` on the step payload.
 
 ## Retry + next-step behavior
-- Outbox retry increments `attempt_no` and refreshes `lease_id` before republishing.
-- On a `SUCCEEDED` result for a non-final step, the orchestrator creates/publishes the next step.
+- Temporal workflow handles retries and sequencing.
+- The workflow records `attempt_no`/`lease_id` before publish, waits for results, and advances to the next step on `SUCCEEDED`.
 
 ## Service Bus: plug-and-play config
 Required env:
-- `LUCIUS_SERVICEBUS_CONNECTION`
+- `LUCIUS_SERVICEBUS_CONNECTION` (Temporal worker)
 
 Optional env:
-- `LUCIUS_OUTBOX_PUBLISH_TIMEOUT` (seconds, default 2.0)
-- `LUCIUS_OUTBOX_RETRY_DELAY` (seconds, default 30.0)
-- `LUCIUS_OUTBOX_MAX_ATTEMPTS` (default 3)
+- `LUCIUS_MAX_ATTEMPTS` (Temporal workflow, default 3)
+- `LUCIUS_STEP_RESULT_TIMEOUT_SECONDS` (Temporal workflow, default 900)
+- `LUCIUS_LEASE_MINUTES` (Temporal workflow, default 15)
 
 Where to set:
 1) Shell:
@@ -94,6 +96,9 @@ export LUCIUS_SERVICEBUS_CONNECTION="Endpoint=sb://...;SharedAccessKeyName=...;S
 ```yaml
 services:
   lucius-orchestrator:
+    environment:
+      LUCIUS_SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
+  lucius-temporal-worker:
     environment:
       LUCIUS_SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
 ```
@@ -111,7 +116,7 @@ Required env:
 - `LUCIUS_TABLE_CONNECTION`
 
 Table names (table backend):
-- `LUCIUS_JOBS_TABLE`, `LUCIUS_STEPS_TABLE`, `LUCIUS_OUTBOX_TABLE`
+- `LUCIUS_JOBS_TABLE`, `LUCIUS_STEPS_TABLE`
 - `LUCIUS_IDEMPOTENCY_TABLE`, `LUCIUS_JOB_INDEX_TABLE`, `LUCIUS_INFLIGHT_TABLE`
 
 Table name (ledger backend):

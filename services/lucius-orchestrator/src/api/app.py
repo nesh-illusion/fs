@@ -1,11 +1,10 @@
-import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable
+from typing import Any, Dict
 from uuid import uuid4
 import zlib
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from config.protocols import ProtocolRegistry
@@ -14,26 +13,25 @@ from ledger.memory_store import (
     MemoryJobIndexStore,
     MemoryIdempotencyStore,
     MemoryJobsStore,
-    MemoryOutboxStore,
     MemoryStepsStore,
     MemoryTenantInflightStore,
 )
-from ledger.models import Job, JobIdempotency, JobIndex, OutboxEntry, Step
+from ledger.models import Job, JobIdempotency, JobIndex, Step
 from ledger.table_storage import (
     TableIdempotencyStore,
     TableJobIndexStore,
     TableJobsStore,
     TableLedgerJobsStore,
-    TableLedgerOutboxStore,
     TableLedgerStepsStore,
-    TableOutboxStore,
     TableStepsStore,
     TableTenantInflightStore,
 )
-from outbox.publisher import AsyncServiceBusPublisher, Publisher
 from validation.idempotency import idempotency_hash
 from validation.validator import SchemaValidator
 from shared.logging import get_logger, log_event
+
+from temporalio.client import Client as TemporalClient
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
 try:
     import jsonschema
@@ -88,24 +86,11 @@ def _routing_decision(envelope: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _outbox_partitions(settings: AppSettings, count: int = 16) -> Iterable[str]:
-    if settings.storage_backend == "ledger":
-        return ["*"]
-    return [f"p{lane}" for lane in range(count)]
-
-
-def _outbox_partition_key(settings: AppSettings, job_id: str, routing: Dict[str, Any]) -> str:
-    if settings.storage_backend == "ledger":
-        return job_id
-    return f"p{routing['lane']}"
-
-
 def _build_stores(settings: AppSettings):
     if settings.storage_backend == "memory":
         return (
             MemoryJobsStore(),
             MemoryStepsStore(),
-            MemoryOutboxStore(),
             MemoryIdempotencyStore(),
             MemoryJobIndexStore(),
             MemoryTenantInflightStore(),
@@ -125,7 +110,6 @@ def _build_stores(settings: AppSettings):
         return (
             TableLedgerJobsStore(ledger_table),
             TableLedgerStepsStore(ledger_table),
-            TableLedgerOutboxStore(ledger_table),
             TableIdempotencyStore(service_client, settings.idempotency_table),
             TableJobIndexStore(service_client, settings.job_index_table),
             TableTenantInflightStore(service_client, settings.inflight_table),
@@ -133,7 +117,6 @@ def _build_stores(settings: AppSettings):
     return (
         TableJobsStore(service_client, settings.jobs_table),
         TableStepsStore(service_client, settings.steps_table),
-        TableOutboxStore(service_client, settings.outbox_table),
         TableIdempotencyStore(service_client, settings.idempotency_table),
         TableJobIndexStore(service_client, settings.job_index_table),
         TableTenantInflightStore(service_client, settings.inflight_table),
@@ -147,18 +130,17 @@ def _find_step(steps: list[Step], step_id: str) -> Step | None:
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if settings.outbox_retry_enabled:
-            app.state.outbox_retry_task = asyncio.create_task(_retry_loop())
+        if settings.temporal_enabled:
+            app.state.temporal_client = await TemporalClient.connect(
+                settings.temporal_address,
+                namespace=settings.temporal_namespace,
+            )
         try:
             yield
         finally:
-            task = getattr(app.state, "outbox_retry_task", None)
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            temporal_client = getattr(app.state, "temporal_client", None)
+            if temporal_client is not None:
+                await temporal_client.close()
 
     app = FastAPI(title="LUCIUS Orchestrator", lifespan=lifespan)
     logger = get_logger("lucius_orchestrator")
@@ -166,275 +148,15 @@ def create_app() -> FastAPI:
     settings = AppSettings.from_env()
     validator = SchemaValidator()
     registry = ProtocolRegistry()
-    jobs_store, steps_store, outbox_store, idempotency_store, job_index_store, inflight_store = _build_stores(settings)
-    publisher: Publisher | None = None
-    if settings.service_bus_connection:
-        publisher = AsyncServiceBusPublisher(
-            settings.service_bus_connection,
-            settings.outbox_publish_timeout_seconds,
-        )
+    jobs_store, steps_store, idempotency_store, job_index_store, inflight_store = _build_stores(settings)
     app.state.jobs_store = jobs_store
     app.state.steps_store = steps_store
-    app.state.outbox_store = outbox_store
     app.state.idempotency_store = idempotency_store
     app.state.job_index_store = job_index_store
     app.state.inflight_store = inflight_store
-    app.state.outbox_publisher = publisher
+    app.state.temporal_client = None
     app.state.registry = registry
     app.state.validator = validator
-
-    async def _publish_entry(entry: OutboxEntry) -> bool:
-        if publisher is None:
-            return False
-        try:
-            log_event(
-                logger,
-                "outbox.publish",
-                outbox_id=entry.outbox_id,
-                job_id=entry.job_id,
-                step_id=entry.step_id,
-                tenant_id=entry.tenant_id,
-                topic=entry.topic,
-                partition=entry.partition,
-                attempt_no=entry.attempt_no,
-                lease_id=entry.lease_id,
-            )
-            await publisher.publish(entry)
-        except Exception as exc:
-            log_event(
-                logger,
-                "outbox.publish.failed",
-                outbox_id=entry.outbox_id,
-                job_id=entry.job_id,
-                step_id=entry.step_id,
-                tenant_id=entry.tenant_id,
-                error=str(exc),
-            )
-            return False
-        return True
-
-    def _mark_publish_success(entry: OutboxEntry, job: Job | None, step: Step | None) -> None:
-        marked_entry = entry
-        if entry.etag is None:
-            pending = outbox_store.list_pending(entry.tenant_bucket, settings.outbox_retry_batch_size)
-            marked_entry = next((item for item in pending if item.outbox_id == entry.outbox_id), entry)
-        outbox_store.mark_sent(marked_entry.outbox_id, marked_entry.tenant_bucket, marked_entry.etag or "")
-        log_event(
-            logger,
-            "outbox.sent",
-            outbox_id=marked_entry.outbox_id,
-            job_id=marked_entry.job_id,
-            step_id=marked_entry.step_id,
-            tenant_id=marked_entry.tenant_id,
-            topic=marked_entry.topic,
-            partition=marked_entry.partition,
-        )
-        now = _now_iso()
-        if step and step.state in {"DISPATCHING", "PENDING"}:
-            if step.etag is None:
-                step = _find_step(steps_store.get_steps(step.job_id), step.step_id) or step
-            step.state = "INITIATED"
-            step.updated_at = now
-            steps_store.update_step(step, step.etag or "")
-        if job and job.state in {"QUEUED", "DISPATCHING"}:
-            if job.etag is None:
-                index = job_index_store.get(job.job_id)
-                if index:
-                    job = jobs_store.get_job(job.job_id, job.tenant_id, index.tenant_bucket) or job
-            job.state = "IN_PROGRESS"
-            job.updated_at = now
-            jobs_store.update_job(job, job.etag or "")
-
-    def _should_retry(entry: OutboxEntry, now: datetime) -> bool:
-        if entry.next_attempt_at is None:
-            return True
-        try:
-            ready_at = datetime.fromisoformat(entry.next_attempt_at)
-        except ValueError:
-            return True
-        return now >= ready_at
-
-    def _schedule_retry(entry: OutboxEntry) -> OutboxEntry:
-        base_entry = entry
-        if entry.etag is None:
-            pending = outbox_store.list_pending(entry.tenant_bucket, settings.outbox_retry_batch_size)
-            base_entry = next((item for item in pending if item.outbox_id == entry.outbox_id), entry)
-        updated = OutboxEntry(
-            outbox_id=entry.outbox_id,
-            tenant_id=entry.tenant_id,
-            tenant_bucket=entry.tenant_bucket,
-            job_id=entry.job_id,
-            step_id=entry.step_id,
-            attempt_no=entry.attempt_no,
-            lease_id=entry.lease_id,
-            state="PENDING",
-            topic=entry.topic,
-            partition=entry.partition,
-            payload=entry.payload,
-            resolved_mode=entry.resolved_mode,
-            lane=entry.lane,
-            routing_key_used=entry.routing_key_used,
-            decision_source=entry.decision_source,
-            decision_reason=entry.decision_reason,
-            created_at=entry.created_at,
-            next_attempt_at=_next_attempt_at(settings.outbox_retry_delay_seconds),
-            sent_at=entry.sent_at,
-            updated_at=_now_iso(),
-            etag=base_entry.etag,
-        )
-        return outbox_store.update_outbox(updated, base_entry.etag or "")
-
-    def _refresh_attempt(entry: OutboxEntry, step: Step) -> tuple[OutboxEntry, Step]:
-        lease_id = uuid4().hex
-        attempt_no = (step.attempt_no or 0) + 1
-        now = _now_iso()
-        step.attempt_no = attempt_no
-        step.lease_id = lease_id
-        step.lease_expires_at = _lease_expires_at()
-        step.state = "DISPATCHING"
-        step.updated_at = now
-        updated_step = steps_store.update_step(step, step.etag or "")
-
-        payload = dict(entry.payload)
-        payload["attempt_no"] = attempt_no
-        payload["lease_id"] = lease_id
-
-        refreshed = OutboxEntry(
-            outbox_id=entry.outbox_id,
-            tenant_id=entry.tenant_id,
-            tenant_bucket=entry.tenant_bucket,
-            job_id=entry.job_id,
-            step_id=entry.step_id,
-            attempt_no=attempt_no,
-            lease_id=lease_id,
-            state="PENDING",
-            topic=entry.topic,
-            partition=entry.partition,
-            payload=payload,
-            resolved_mode=entry.resolved_mode,
-            lane=entry.lane,
-            routing_key_used=entry.routing_key_used,
-            decision_source=entry.decision_source,
-            decision_reason=entry.decision_reason,
-            created_at=entry.created_at,
-            next_attempt_at=_now_iso(),
-            sent_at=None,
-            updated_at=now,
-            etag=entry.etag,
-        )
-        updated_entry = outbox_store.update_outbox(refreshed, entry.etag or "")
-        return updated_entry, updated_step
-
-    def _mark_retry_exhausted(entry: OutboxEntry, job: Job, step: Step) -> None:
-        now = _now_iso()
-        step.state = "FAILED_FINAL"
-        step.last_error_code = "RETRY_LIMIT"
-        step.last_error_message = "outbox retry limit exceeded"
-        step.completed_at = now
-        step.updated_at = now
-        steps_store.update_step(step, step.etag or "")
-
-        job.state = "FAILED_FINAL"
-        job.error_code = step.last_error_code
-        job.error_message = step.last_error_message
-        job.completed_at = now
-        job.updated_at = now
-        jobs_store.update_job(job, job.etag or "")
-        inflight_store.release(job.tenant_id)
-
-        exhausted = OutboxEntry(
-            outbox_id=entry.outbox_id,
-            tenant_id=entry.tenant_id,
-            tenant_bucket=entry.tenant_bucket,
-            job_id=entry.job_id,
-            step_id=entry.step_id,
-            attempt_no=entry.attempt_no,
-            lease_id=entry.lease_id,
-            state="FAILED_FINAL",
-            topic=entry.topic,
-            partition=entry.partition,
-            payload=entry.payload,
-            resolved_mode=entry.resolved_mode,
-            lane=entry.lane,
-            routing_key_used=entry.routing_key_used,
-            decision_source=entry.decision_source,
-            decision_reason=entry.decision_reason,
-            created_at=entry.created_at,
-            next_attempt_at=None,
-            sent_at=entry.sent_at,
-            updated_at=now,
-            etag=entry.etag,
-        )
-        outbox_store.update_outbox(exhausted, entry.etag or "")
-
-    async def _process_pending_outbox(partitions: Iterable[str], limit: int) -> None:
-        if publisher is None:
-            return
-        now = datetime.now(timezone.utc)
-        for partition in partitions:
-            entries = outbox_store.list_pending(partition, limit)
-            for entry in entries:
-                if not _should_retry(entry, now):
-                    continue
-                index = job_index_store.get(entry.job_id)
-                if index is None:
-                    continue
-                job = jobs_store.get_job(entry.job_id, entry.tenant_id, index.tenant_bucket)
-                step = _find_step(steps_store.get_steps(entry.job_id), entry.step_id)
-                if job is None or step is None:
-                    continue
-                if step.attempt_no >= settings.outbox_max_attempts:
-                    _mark_retry_exhausted(entry, job, step)
-                    continue
-                try:
-                    updated_entry, updated_step = _refresh_attempt(entry, step)
-                except Exception as exc:
-                    log_event(
-                        logger,
-                        "outbox.retry.claim_failed",
-                        outbox_id=entry.outbox_id,
-                        job_id=entry.job_id,
-                        step_id=entry.step_id,
-                        error=str(exc),
-                    )
-                    continue
-                if await _publish_entry(updated_entry):
-                    _mark_publish_success(updated_entry, job, updated_step)
-                else:
-                    _schedule_retry(updated_entry)
-
-    async def _retry_pending_outbox() -> None:
-        await _process_pending_outbox(_outbox_partitions(settings), settings.outbox_retry_batch_size)
-
-    async def _publish_outbox_background(entry: OutboxEntry, tenant_id: str) -> None:
-        try:
-            if await _publish_entry(entry):
-                index = job_index_store.get(entry.job_id)
-                if index is None:
-                    return
-                job = jobs_store.get_job(entry.job_id, tenant_id, index.tenant_bucket)
-                step = _find_step(steps_store.get_steps(entry.job_id), entry.step_id)
-                _mark_publish_success(entry, job, step)
-            else:
-                _schedule_retry(entry)
-        except Exception as exc:
-            log_event(
-                logger,
-                "outbox.publish.background_failed",
-                outbox_id=entry.outbox_id,
-                job_id=entry.job_id,
-                step_id=entry.step_id,
-                tenant_id=tenant_id,
-                error=str(exc),
-            )
-
-    async def _retry_loop() -> None:
-        while True:
-            try:
-                await _retry_pending_outbox()
-            except Exception as exc:
-                log_event(logger, "outbox.retry.failed", error=str(exc))
-            await asyncio.sleep(settings.outbox_retry_interval_seconds)
 
     @app.post("/v1/commands")
     async def create_command(envelope: Dict[str, Any]):
@@ -505,8 +227,6 @@ def create_app() -> FastAPI:
             job_id = uuid4().hex
             created_at = _now_iso()
             tenant_bucket = _tenant_bucket(envelope["tenant_id"], created_at)
-            lease_id = uuid4().hex
-            lease_expires_at = _lease_expires_at()
             job = Job(
                 job_id=job_id,
                 tenant_id=envelope["tenant_id"],
@@ -537,16 +257,6 @@ def create_app() -> FastAPI:
                     step_payload = payload["steps"].get(step.step_id, {})
                 else:
                     step_payload = payload
-                if index == 0:
-                    step_state = "DISPATCHING"
-                    attempt_no = 1
-                    step_lease_id = lease_id
-                    step_lease_expires_at = lease_expires_at
-                else:
-                    step_state = "PENDING"
-                    attempt_no = 0
-                    step_lease_id = ""
-                    step_lease_expires_at = ""
                 steps.append(
                     Step(
                         job_id=job_id,
@@ -554,10 +264,10 @@ def create_app() -> FastAPI:
                         step_id=step.step_id,
                         step_type=step.step_type,
                         service=step.service,
-                        state=step_state,
-                        attempt_no=attempt_no,
-                        lease_id=step_lease_id,
-                        lease_expires_at=step_lease_expires_at,
+                        state="PENDING",
+                        attempt_no=0,
+                        lease_id="",
+                        lease_expires_at="",
                         input_ref=envelope["input_ref"],
                         workspace_ref=envelope.get("workspace_ref", {}),
                         output_ref=envelope["output_ref"],
@@ -576,62 +286,6 @@ def create_app() -> FastAPI:
                 )
             steps_store.create_steps(job_id, steps)
 
-            outbox_partition = _outbox_partition_key(settings, job_id, routing)
-            outbox = OutboxEntry(
-                outbox_id=uuid4().hex,
-                tenant_id=envelope["tenant_id"],
-                tenant_bucket=outbox_partition,
-                job_id=job_id,
-                step_id=protocol.steps[0].step_id,
-                attempt_no=1,
-                lease_id=lease_id,
-                state="PENDING",
-                topic=f"global-bus-p{routing['lane']}",
-                partition=str(routing["lane"]),
-                payload={
-                    "jobId": job_id,
-                    "tenant_id": envelope["tenant_id"],
-                    "stepId": protocol.steps[0].step_id,
-                    "protocol_id": protocol.protocol_id,
-                    "step_type": protocol.steps[0].step_type,
-                    "attempt_no": 1,
-                    "lease_id": lease_id,
-                    "input_ref": envelope["input_ref"],
-                    "workspace_ref": envelope.get("workspace_ref", {}),
-                    "output_ref": envelope["output_ref"],
-                    "payload": steps[0].payload,
-                    "callback_urls": envelope.get("callback_urls", {}),
-                    "mode": routing["resolved_mode"],
-                    "lane": routing["lane"],
-                    "routing_key_used": routing["routing_key_used"],
-                },
-                resolved_mode=routing["resolved_mode"],
-                lane=routing["lane"],
-                routing_key_used=routing["routing_key_used"],
-                decision_source=routing["decision_source"],
-                decision_reason=routing["decision_reason"],
-                created_at=created_at,
-                next_attempt_at=_now_iso(),
-                sent_at=None,
-                updated_at=created_at,
-            )
-            outbox_entry = outbox_store.create_outbox(outbox)
-            log_event(
-                logger,
-                "outbox.created",
-                job_id=job_id,
-                step_id=protocol.steps[0].step_id,
-                tenant_id=envelope["tenant_id"],
-                topic=outbox.topic,
-                partition=outbox.partition,
-                attempt_no=outbox.attempt_no,
-                lease_id=outbox.lease_id,
-            )
-
-            job.state = "DISPATCHING"
-            job.updated_at = _now_iso()
-            job = jobs_store.update_job(job, job.etag or "")
-
             idempotency_store.put(
                 JobIdempotency(
                     tenant_id=envelope["tenant_id"],
@@ -649,18 +303,47 @@ def create_app() -> FastAPI:
                 )
             )
 
-            if publisher is None:
-                log_event(
-                    logger,
-                    "outbox.publish.skipped",
-                    outbox_id=outbox_entry.outbox_id,
-                    job_id=job_id,
-                    tenant_id=envelope["tenant_id"],
-                    reason="missing_service_bus",
-                )
-                _schedule_retry(outbox_entry)
+            workflow_input = {
+                "job_id": job_id,
+                "tenant_id": envelope["tenant_id"],
+                "protocol_id": protocol.protocol_id,
+                "steps": [
+                    {
+                        "step_id": step.step_id,
+                        "step_type": step.step_type,
+                        "service": step.service,
+                        "payload": step.payload,
+                        "input_ref": step.input_ref,
+                        "workspace_ref": step.workspace_ref,
+                        "output_ref": step.output_ref,
+                    }
+                    for step in steps
+                ],
+                "lane": routing["lane"],
+                "routing_key_used": routing["routing_key_used"],
+                "mode": routing["resolved_mode"],
+                "callback_urls": envelope.get("callback_urls", {}),
+                "correlation_id": envelope.get("correlation_id"),
+                "traceparent": envelope.get("traceparent"),
+            }
+            if settings.temporal_enabled:
+                temporal_client = app.state.temporal_client
+                if temporal_client is None:
+                    raise HTTPException(status_code=500, detail="temporal client not available")
+                try:
+                    await temporal_client.start_workflow(
+                        "LuciusWorkflow",
+                        workflow_input,
+                        id=job_id,
+                        task_queue=settings.temporal_task_queue,
+                        execution_timeout=timedelta(
+                            seconds=settings.temporal_workflow_execution_timeout_seconds
+                        ),
+                    )
+                except WorkflowAlreadyStartedError:
+                    pass
             else:
-                asyncio.create_task(_publish_outbox_background(outbox_entry, envelope["tenant_id"]))
+                log_event(logger, "temporal.disabled", job_id=job_id)
 
             return JSONResponse(status_code=202, content={"jobId": job_id})
         except Exception:
@@ -696,20 +379,61 @@ def create_app() -> FastAPI:
         step = _find_step(steps_store.get_steps(job_id), step_id)
         if step is None:
             raise HTTPException(status_code=404, detail="step not found")
+        if step.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
+            log_event(
+                logger,
+                "callback.ack.ignored",
+                job_id=job_id,
+                step_id=step_id,
+                tenant_id=tenant_id,
+                reason="terminal_step",
+            )
+            return {"status": "ignored"}
         if step.attempt_no != attempt_no or step.lease_id != lease_id:
-            raise HTTPException(status_code=409, detail="attempt/lease mismatch")
+            log_event(
+                logger,
+                "callback.ack.ignored",
+                job_id=job_id,
+                step_id=step_id,
+                tenant_id=tenant_id,
+                reason="attempt_lease_mismatch",
+            )
+            return {"status": "ignored"}
         if step.state not in {"INITIATED", "PROCESSING", "IN_PROGRESS"}:
-            raise HTTPException(status_code=409, detail="invalid step state")
+            log_event(
+                logger,
+                "callback.ack.ignored",
+                job_id=job_id,
+                step_id=step_id,
+                tenant_id=tenant_id,
+                reason="invalid_step_state",
+            )
+            return {"status": "ignored"}
 
         if step.state == "INITIATED":
             step.state = "PROCESSING"
             step.updated_at = _now_iso()
             steps_store.update_step(step, step.etag or "")
 
-        if job.state in {"QUEUED", "DISPATCHING"}:
+        if job.state in {"QUEUED"}:
             job.state = "IN_PROGRESS"
             job.updated_at = _now_iso()
             jobs_store.update_job(job, job.etag or "")
+
+        if settings.temporal_enabled:
+            temporal_client = app.state.temporal_client
+            if temporal_client is None:
+                raise HTTPException(status_code=500, detail="temporal client not available")
+            await temporal_client.signal_workflow(
+                job_id,
+                "step_ack",
+                {
+                    "jobId": job_id,
+                    "stepId": step_id,
+                    "attempt_no": attempt_no,
+                    "lease_id": lease_id,
+                },
+            )
 
         log_event(
             logger,
@@ -755,10 +479,36 @@ def create_app() -> FastAPI:
         step = _find_step(steps, step_id)
         if step is None:
             raise HTTPException(status_code=404, detail="step not found")
+        if step.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
+            log_event(
+                logger,
+                "callback.result.ignored",
+                job_id=job_id,
+                step_id=step_id,
+                tenant_id=tenant_id,
+                reason="terminal_step",
+            )
+            return {"status": "ignored"}
         if step.attempt_no != attempt_no or step.lease_id != lease_id:
-            raise HTTPException(status_code=409, detail="attempt/lease mismatch")
+            log_event(
+                logger,
+                "callback.result.ignored",
+                job_id=job_id,
+                step_id=step_id,
+                tenant_id=tenant_id,
+                reason="attempt_lease_mismatch",
+            )
+            return {"status": "ignored"}
         if step.state not in {"INITIATED", "PROCESSING", "IN_PROGRESS"}:
-            raise HTTPException(status_code=409, detail="invalid step state")
+            log_event(
+                logger,
+                "callback.result.ignored",
+                job_id=job_id,
+                step_id=step_id,
+                tenant_id=tenant_id,
+                reason="invalid_step_state",
+            )
+            return {"status": "ignored"}
 
         now = _now_iso()
         step.updated_at = now
@@ -779,67 +529,6 @@ def create_app() -> FastAPI:
             job.completed_at = now
             jobs_store.update_job(job, job.etag or "")
             inflight_store.release(job.tenant_id)
-        elif step.state == "SUCCEEDED":
-            next_step = steps[step.step_index + 1]
-            lease_id = uuid4().hex
-            next_step.attempt_no = 1
-            next_step.lease_id = lease_id
-            next_step.lease_expires_at = _lease_expires_at()
-            next_step.state = "DISPATCHING"
-            next_step.updated_at = now
-            next_step = steps_store.update_step(next_step, next_step.etag or "")
-
-            job.current_step_index = next_step.step_index
-            job.current_step_id = next_step.step_id
-            job.updated_at = now
-            jobs_store.update_job(job, job.etag or "")
-
-            outbox_partition = _outbox_partition_key(settings, job.job_id, {"lane": next_step.lane})
-            outbox = OutboxEntry(
-                outbox_id=uuid4().hex,
-                tenant_id=job.tenant_id,
-                tenant_bucket=outbox_partition,
-                job_id=job.job_id,
-                step_id=next_step.step_id,
-                attempt_no=1,
-                lease_id=lease_id,
-                state="PENDING",
-                topic=f"global-bus-p{next_step.lane}",
-                partition=str(next_step.lane),
-                payload={
-                    "jobId": job.job_id,
-                    "tenant_id": job.tenant_id,
-                    "stepId": next_step.step_id,
-                    "protocol_id": job.protocol_id,
-                    "step_type": next_step.step_type,
-                    "attempt_no": 1,
-                    "lease_id": lease_id,
-                    "input_ref": next_step.input_ref,
-                    "workspace_ref": next_step.workspace_ref,
-                    "output_ref": next_step.output_ref,
-                    "payload": next_step.payload,
-                    "callback_urls": {},
-                    "mode": next_step.resolved_mode,
-                    "lane": next_step.lane,
-                    "routing_key_used": next_step.routing_key_used,
-                },
-                resolved_mode=next_step.resolved_mode,
-                lane=next_step.lane,
-                routing_key_used=next_step.routing_key_used,
-                decision_source=next_step.decision_source,
-                decision_reason=next_step.decision_reason,
-                created_at=now,
-                next_attempt_at=now,
-                sent_at=None,
-                updated_at=now,
-            )
-            outbox_entry = outbox_store.create_outbox(outbox)
-            if publisher is None:
-                _schedule_retry(outbox_entry)
-            elif await _publish_entry(outbox_entry):
-                _mark_publish_success(outbox_entry, job, next_step)
-            else:
-                _schedule_retry(outbox_entry)
         elif step.state == "FAILED_FINAL":
             job.state = "FAILED_FINAL"
             job.updated_at = now
@@ -849,6 +538,31 @@ def create_app() -> FastAPI:
             jobs_store.update_job(job, job.etag or "")
             inflight_store.release(job.tenant_id)
 
+        temporal_status = step.state
+        if step.state == "FAILED_RETRY":
+            temporal_status = "FAILED_RETRY"
+        elif step.state == "FAILED_FINAL":
+            temporal_status = "FAILED_FINAL"
+        elif step.state == "SUCCEEDED":
+            temporal_status = "SUCCEEDED"
+
+        if settings.temporal_enabled:
+            temporal_client = app.state.temporal_client
+            if temporal_client is None:
+                raise HTTPException(status_code=500, detail="temporal client not available")
+            await temporal_client.signal_workflow(
+                job_id,
+                "step_result",
+                {
+                    "jobId": job_id,
+                    "stepId": step_id,
+                    "status": temporal_status,
+                    "attempt_no": attempt_no,
+                    "lease_id": lease_id,
+                    "error": error,
+                },
+            )
+
         log_event(
             logger,
             "callback.result.accepted",
@@ -857,6 +571,50 @@ def create_app() -> FastAPI:
             tenant_id=tenant_id,
             status=step.state,
         )
+        return {"status": "ok"}
+
+    @app.post("/v1/internal/steps/attempt")
+    async def record_attempt(payload: Dict[str, Any]):
+        job_id = payload.get("jobId")
+        step_id = payload.get("stepId")
+        tenant_id = payload.get("tenant_id")
+        attempt_no = payload.get("attempt_no")
+        lease_id = payload.get("lease_id")
+        lease_expires_at = payload.get("lease_expires_at") or _lease_expires_at()
+        if not all([job_id, step_id, tenant_id, attempt_no, lease_id]):
+            raise HTTPException(status_code=400, detail="missing required fields")
+
+        index = job_index_store.get(job_id)
+        if index is None or index.tenant_id != tenant_id:
+            raise HTTPException(status_code=404, detail="job not found")
+        job = jobs_store.get_job(job_id, tenant_id, index.tenant_bucket)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        if job.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
+            raise HTTPException(status_code=409, detail="job is in terminal state")
+
+        steps = steps_store.get_steps(job_id)
+        step = _find_step(steps, step_id)
+        if step is None:
+            raise HTTPException(status_code=404, detail="step not found")
+        if step.state in {"SUCCEEDED", "FAILED_FINAL"}:
+            raise HTTPException(status_code=409, detail="step is in terminal state")
+        if step.attempt_no == attempt_no and step.lease_id == lease_id:
+            return {"status": "ok"}
+
+        now = _now_iso()
+        step.attempt_no = attempt_no
+        step.lease_id = lease_id
+        step.lease_expires_at = lease_expires_at
+        step.state = "INITIATED"
+        step.updated_at = now
+        steps_store.update_step(step, step.etag or "")
+
+        job.current_step_id = step.step_id
+        job.current_step_index = step.step_index
+        job.attempts_total = (job.attempts_total or 0) + 1
+        job.updated_at = now
+        jobs_store.update_job(job, job.etag or "")
         return {"status": "ok"}
 
     @app.get("/v1/jobs/{job_id}")
@@ -869,11 +627,18 @@ def create_app() -> FastAPI:
         job = jobs_store.get_job(job_id, tenant_id, tenant_bucket)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        return job
+        steps = steps_store.get_steps(job_id)
+        return {"job": job, "steps": steps}
 
     @app.get("/v1/jobs/{job_id}/steps")
-    async def get_steps(job_id: str):
-        return steps_store.get_steps(job_id)
+    async def get_steps(job_id: str, step_id: str | None = None):
+        steps = steps_store.get_steps(job_id)
+        if step_id is None:
+            return steps
+        step = _find_step(steps, step_id)
+        if step is None:
+            raise HTTPException(status_code=404, detail="step not found")
+        return step
 
     @app.post("/v1/jobs/{job_id}:cancel")
     async def cancel_job(job_id: str, tenant_id: str, tenant_bucket: str | None = None):
@@ -890,24 +655,5 @@ def create_app() -> FastAPI:
         job.state = "CANCELLING"
         job.updated_at = _now_iso()
         return jobs_store.update_job(job, job.etag or "")
-
-    if settings.admin_enabled:
-        def _require_admin(key: str | None) -> None:
-            if settings.admin_api_key and key != settings.admin_api_key:
-                raise HTTPException(status_code=401, detail="unauthorized")
-
-        @app.post("/v1/admin/outbox/retry")
-        async def admin_outbox_retry(
-            partition_key: str | None = None,
-            limit: int = 100,
-            x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-        ):
-            _require_admin(x_admin_key)
-            if publisher is None:
-                raise HTTPException(status_code=500, detail="missing service bus connection")
-
-            partitions = [partition_key] if partition_key else list(_outbox_partitions(settings))
-            await _process_pending_outbox(partitions, limit)
-            return {"status": "ok"}
 
     return app

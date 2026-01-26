@@ -11,13 +11,10 @@ def _create_command(client: TestClient, payload: dict) -> str:
     return response.json()["jobId"]
 
 
-def _get_outbox_entry(app, job_id: str):
-    entries = [
-        entry for entry in app.state.outbox_store._entries.values()
-        if entry.job_id == job_id
-    ]
-    assert len(entries) == 1
-    return entries[0]
+def _get_first_step(app, job_id: str):
+    steps = app.state.steps_store.get_steps(job_id)
+    assert steps
+    return steps[0]
 
 
 def _base_payload() -> dict:
@@ -38,13 +35,12 @@ def test_default_mode_routes_by_tenant_id():
     payload["mode"] = "DEFAULT"
     job_id = _create_command(client, payload)
 
-    outbox = _get_outbox_entry(app, job_id)
+    step = _get_first_step(app, job_id)
     routing_key = "tenanta"
     expected_lane = zlib.crc32(routing_key.encode("utf-8")) % 16
 
-    assert outbox.routing_key_used == routing_key
-    assert outbox.lane == expected_lane
-    assert outbox.topic == f"global-bus-p{expected_lane}"
+    assert step.routing_key_used == routing_key
+    assert step.lane == expected_lane
 
 
 def test_burst_mode_routes_by_tenant_and_doc_id():
@@ -55,10 +51,9 @@ def test_burst_mode_routes_by_tenant_and_doc_id():
     payload["doc_id"] = "Doc-99"
     job_id = _create_command(client, payload)
 
-    outbox = _get_outbox_entry(app, job_id)
+    step = _get_first_step(app, job_id)
     routing_key = "tenantadoc-99".lower()
     expected_lane = zlib.crc32(routing_key.encode("utf-8")) % 16
 
-    assert outbox.routing_key_used == routing_key
-    assert outbox.lane == expected_lane
-    assert outbox.topic == f"global-bus-p{expected_lane}"
+    assert step.routing_key_used == routing_key
+    assert step.lane == expected_lane

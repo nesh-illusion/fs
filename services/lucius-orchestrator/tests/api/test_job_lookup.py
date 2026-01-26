@@ -27,4 +27,6 @@ def test_job_lookup_without_tenant_bucket(client):
 
     get_resp = client.get(f"/v1/jobs/{job_id}", params={"tenant_id": "t1"})
     assert get_resp.status_code == 200
-    assert get_resp.json()["job_id"] == job_id
+    body = get_resp.json()
+    assert body["job"]["job_id"] == job_id
+    assert len(body["steps"]) == 1

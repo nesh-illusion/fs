@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -30,43 +31,41 @@ def _create_command(client: TestClient, payload: dict) -> str:
     return response.json()["jobId"]
 
 
-def _publish_once(app, job_id: str):
-    entries = [
-        entry for entry in app.state.outbox_store._entries.values()
-        if entry.job_id == job_id
-    ]
-    assert entries
-    entry = entries[0]
-    updated = app.state.outbox_store.mark_sent(entry.outbox_id, entry.tenant_bucket, entry.etag or "")
+def _start_step(client: TestClient, app, job_id: str, tenant_id: str):
     steps = app.state.steps_store.get_steps(job_id)
-    step = next(step for step in steps if step.step_id == entry.step_id)
-    step.state = "INITIATED"
-    step.updated_at = _now_iso()
-    app.state.steps_store.update_step(step, step.etag or "")
-    index = app.state.job_index_store.get(job_id)
-    job = app.state.jobs_store.get_job(job_id, entry.tenant_id, index.tenant_bucket)
-    job.state = "IN_PROGRESS"
-    job.updated_at = _now_iso()
-    app.state.jobs_store.update_job(job, job.etag or "")
-    return updated
+    step = steps[0]
+    lease_id = uuid4().hex
+    response = client.post(
+        "/v1/internal/steps/attempt",
+        json={
+            "jobId": job_id,
+            "stepId": step.step_id,
+            "tenant_id": tenant_id,
+            "attempt_no": 1,
+            "lease_id": lease_id,
+            "lease_expires_at": _now_iso(),
+        },
+    )
+    assert response.status_code == 200
+    return step.step_id, lease_id
 
 
-def _complete_job(client: TestClient, outbox_entry) -> None:
+def _complete_job(client: TestClient, job_id: str, step_id: str, tenant_id: str, lease_id: str) -> None:
     ack_payload = {
-        "jobId": outbox_entry.job_id,
-        "stepId": outbox_entry.step_id,
-        "tenant_id": outbox_entry.tenant_id,
-        "attempt_no": outbox_entry.attempt_no,
-        "lease_id": outbox_entry.lease_id,
+        "jobId": job_id,
+        "stepId": step_id,
+        "tenant_id": tenant_id,
+        "attempt_no": 1,
+        "lease_id": lease_id,
         "status": "ACKED",
         "timestamp": _now_iso(),
     }
     result_payload = {
-        "jobId": outbox_entry.job_id,
-        "stepId": outbox_entry.step_id,
-        "tenant_id": outbox_entry.tenant_id,
-        "attempt_no": outbox_entry.attempt_no,
-        "lease_id": outbox_entry.lease_id,
+        "jobId": job_id,
+        "stepId": step_id,
+        "tenant_id": tenant_id,
+        "attempt_no": 1,
+        "lease_id": lease_id,
         "status": "SUCCEEDED",
         "timestamp": _now_iso(),
     }
@@ -85,8 +84,8 @@ def test_inflight_limit_enforced(monkeypatch):
     response = client.post("/v1/commands", json=_base_payload("t1", "in-2"))
     assert response.status_code == 429
 
-    outbox = _publish_once(app, job1)
-    _complete_job(client, outbox)
+    step_id, lease_id = _start_step(client, app, job1, "t1")
+    _complete_job(client, job1, step_id, "t1", lease_id)
 
     job3 = _create_command(client, _base_payload("t1", "in-3"))
     assert job3

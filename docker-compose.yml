@@ -7,6 +7,9 @@ services:
       - "8000:8000"
     environment:
       LUCIUS_STORAGE_BACKEND: "memory"
+      LUCIUS_TEMPORAL_ADDRESS: "temporal:7233"
+      LUCIUS_TEMPORAL_NAMESPACE: "default"
+      LUCIUS_TEMPORAL_TASK_QUEUE: "lucius"
 
   vector-ingestion:
     build:
@@ -22,6 +25,44 @@ services:
     build:
       context: .
       dockerfile: services/semantic-intelligence/Dockerfile
+
+  lucius-temporal-worker:
+    build:
+      context: .
+      dockerfile: services/lucius-orchestrator/Dockerfile
+    command: ["python", "-m", "temporal_worker.main"]
+    environment:
+      LUCIUS_TEMPORAL_ADDRESS: "temporal:7233"
+      LUCIUS_TEMPORAL_NAMESPACE: "default"
+      LUCIUS_TEMPORAL_TASK_QUEUE: "lucius"
+      LUCIUS_ORCHESTRATOR_URL: "http://lucius-orchestrator:8000"
+      LUCIUS_STEP_RESULT_TIMEOUT_SECONDS: "900"
+      LUCIUS_MAX_ATTEMPTS: "3"
+      LUCIUS_LEASE_MINUTES: "15"
+    depends_on:
+      - lucius-orchestrator
+      - temporal
+
+  temporal-postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    ports:
+      - "5432:5432"
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    environment:
+      DB: postgresql
+      DB_PORT: 5432
+      POSTGRES_SEEDS: temporal-postgres
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+    ports:
+      - "7233:7233"
+    depends_on:
+      - temporal-postgres
 
   test_runner:
     build:
