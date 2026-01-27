@@ -1,6 +1,6 @@
 # Lucius Orchestrator
 
-FastAPI service that validates command requests, creates jobs/steps, starts Temporal workflows, and exposes callback/read APIs backed by the ledger read-model.
+FastAPI service that validates command requests, creates jobs/steps, starts Temporal workflows, and exposes read APIs backed by the ledger read-model.
 
 ## Components
 - `api/app.py`: HTTP entrypoint, routes, orchestration wiring.
@@ -17,14 +17,14 @@ FastAPI service that validates command requests, creates jobs/steps, starts Temp
   - `idempotency.py`: idempotency hash logic.
 
 ## Flow
-1) Receive `POST /v1/commands`.
+1) Receive `POST /v1/orchestrate`.
 2) Validate envelope and step payloads against JSON schema.
 3) Resolve protocol and build Job + Steps.
 4) Persist Job/Steps + Idempotency + JobIndex.
 5) Start Temporal workflow with job + step inputs (workflow_id = jobId).
 6) Return `202` with `jobId`.
-7) Temporal worker records attempt/lease, publishes directive, waits for result signals.
-8) Orchestrator updates ledger on ACK/RESULT callbacks and signals Temporal.
+7) Temporal worker records attempt/lease and publishes directive via lucius-invoker.
+8) lucius-invoker updates ledger on ACK/RESULT bus messages and signals Temporal.
 
 ## Configuration
 Required/optional environment variables:
@@ -42,6 +42,11 @@ Required/optional environment variables:
 Temporal worker process:
 ```
 python -m temporal_worker.main
+```
+
+Invoker process (bus callbacks + ledger updates):
+```
+uvicorn invoker.app:create_app --factory --host 0.0.0.0 --port 8001
 ```
 
 Memory mode uses in-process stores and does not persist state between restarts.

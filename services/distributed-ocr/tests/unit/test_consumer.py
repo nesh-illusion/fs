@@ -18,7 +18,7 @@ def _payload() -> dict:
         "workspace_ref": None,
         "output_ref": "out",
         "payload": {},
-        "callback_urls": {"ack": "http://ack", "result": "http://result"},
+        "lane": 0,
     }
 
 

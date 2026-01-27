@@ -14,7 +14,7 @@ docker compose down
 
 ## API: Single-step request (OCR)
 ```bash
-curl -s -X POST http://localhost:8000/v1/commands \
+curl -s -X POST http://localhost:8000/v1/orchestrate \
   -H "Content-Type: application/json" \
   -d '{
     "tenant_id": "t1",
@@ -22,17 +22,13 @@ curl -s -X POST http://localhost:8000/v1/commands \
     "input_ref": "in",
     "output_ref": "out",
     "payload": {},
-    "schema_version": "v1",
-    "callback_urls": {
-      "ack": "http://localhost:8000/v1/callbacks/ack",
-      "result": "http://localhost:8000/v1/callbacks/result"
-    }
+    "schema_version": "v1"
   }'
 ```
 
 ## API: Multi-step request (OCR->EMBEDDING)
 ```bash
-curl -s -X POST http://localhost:8000/v1/commands \
+curl -s -X POST http://localhost:8000/v1/orchestrate \
   -H "Content-Type: application/json" \
   -d '{
     "tenant_id": "t1",
@@ -45,11 +41,7 @@ curl -s -X POST http://localhost:8000/v1/commands \
         "embedding": {"model": "text-embedding-3-large"}
       }
     },
-    "schema_version": "v1",
-    "callback_urls": {
-      "ack": "http://localhost:8000/v1/callbacks/ack",
-      "result": "http://localhost:8000/v1/callbacks/result"
-    }
+    "schema_version": "v1"
   }'
 ```
 
@@ -112,7 +104,9 @@ services:
 
 ## Service Bus: plug-and-play config
 Required env:
-- `LUCIUS_SERVICEBUS_CONNECTION` (Temporal worker)
+- `LUCIUS_SERVICEBUS_CONNECTION` (lucius-invoker)
+- `LUCIUS_SERVICEBUS_REPLY_PREFIX` (lucius-invoker, default `global-bus-replies-p`)
+- `LUCIUS_SERVICEBUS_REPLY_SUBSCRIPTION` (lucius-invoker, default `lucius-invoker`)
 
 Optional env:
 - `LUCIUS_MAX_ATTEMPTS` (Temporal workflow, default 3)
@@ -127,18 +121,22 @@ export LUCIUS_SERVICEBUS_CONNECTION="Endpoint=sb://...;SharedAccessKeyName=...;S
 2) docker-compose:
 ```yaml
 services:
-  lucius-temporal-worker:
+  lucius-invoker:
     environment:
       LUCIUS_SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
+      LUCIUS_SERVICEBUS_REPLY_PREFIX: "global-bus-replies-p"
+      LUCIUS_SERVICEBUS_REPLY_SUBSCRIPTION: "lucius-invoker"
 ```
 3) docker run:
 ```bash
 docker run --rm \
   -e LUCIUS_SERVICEBUS_CONNECTION="Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..." \
+  -e LUCIUS_SERVICEBUS_REPLY_PREFIX="global-bus-replies-p" \
+  -e LUCIUS_SERVICEBUS_REPLY_SUBSCRIPTION="lucius-invoker" \
   -e LUCIUS_TEMPORAL_ADDRESS="temporal:7233" \
   -e LUCIUS_TEMPORAL_NAMESPACE="default" \
   -e LUCIUS_TEMPORAL_TASK_QUEUE="lucius" \
-  lucius/lucius-orchestrator:local python -m temporal_worker.main
+  lucius/lucius-orchestrator:local uvicorn invoker.app:create_app --factory --host 0.0.0.0 --port 8001
 ```
 
 ## Platform consumers: Service Bus config
@@ -146,6 +144,7 @@ Required env (each consumer service):
 - `SERVICEBUS_CONNECTION`
 - `SERVICEBUS_TOPIC`
 - `SERVICEBUS_SUBSCRIPTION`
+- `SERVICEBUS_REPLY_PREFIX` (default `global-bus-replies-p`)
 
 Notes:
 - `SERVICEBUS_TOPIC` should match the lane topic(s) used by the orchestrator (`global-bus-p0` ... `global-bus-p15`).
@@ -166,6 +165,7 @@ services:
       SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
       SERVICEBUS_TOPIC: "global-bus-p0"
       SERVICEBUS_SUBSCRIPTION: "distributed-ocr"
+      SERVICEBUS_REPLY_PREFIX: "global-bus-replies-p"
 ```
 
 ## Azure Table Storage: plug-and-play config
@@ -203,13 +203,19 @@ services:
 ```
 
 ## Azure App Configuration: plug-and-play config
-Status: not wired yet. To enable, we need to add an App Config loader and merge it into `AppSettings` before reading env.
+Config source: Azure App Configuration exported as environment variables at runtime.
 
-Proposed env keys:
-- `LUCIUS_APPCONFIG_CONNECTION`
-- Optional: `LUCIUS_APPCONFIG_LABEL`, `LUCIUS_APPCONFIG_PREFIX`
+Suggested key mappings (App Config -> Env):
+- `Lucius:ServiceBus:Connection` -> `LUCIUS_SERVICEBUS_CONNECTION`
+- `Lucius:ServiceBus:ReplyPrefix` -> `LUCIUS_SERVICEBUS_REPLY_PREFIX`
+- `Lucius:ServiceBus:ReplySubscription` -> `LUCIUS_SERVICEBUS_REPLY_SUBSCRIPTION`
+- `Lucius:Ledger:Table` -> `LUCIUS_LEDGER_TABLE`
+- `Lucius:Table:Connection` -> `LUCIUS_TABLE_CONNECTION`
+- `Lucius:Temporal:Address` -> `LUCIUS_TEMPORAL_ADDRESS`
+- `Lucius:Temporal:Namespace` -> `LUCIUS_TEMPORAL_NAMESPACE`
+- `Lucius:Temporal:TaskQueue` -> `LUCIUS_TEMPORAL_TASK_QUEUE`
 
-Where to set (once wired):
+Where to set (exported by App Config loader):
 1) Shell:
 ```bash
 export LUCIUS_APPCONFIG_CONNECTION="Endpoint=https://...;Id=...;Secret=..."

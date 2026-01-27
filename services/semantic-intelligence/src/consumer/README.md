@@ -1,7 +1,10 @@
 # Platform Service Skeleton
 
 ## Purpose
-This skeleton provides a consistent contract for consuming directives, sending ACK/RESULT callbacks, and enforcing idempotency.
+This skeleton provides a consistent contract for consuming directives, sending ACK/RESULT bus replies, and enforcing idempotency.
+
+Environment:
+- `SERVICEBUS_REPLY_PREFIX` (default `global-bus-replies-p`)
 
 ## Required components
 - models/directive_model.py

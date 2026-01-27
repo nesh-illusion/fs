@@ -24,6 +24,7 @@ class Job:
     error_message: Optional[str]
     correlation_id: Optional[str]
     traceparent: Optional[str]
+    final_output: Optional[str] = None
     etag: Optional[str] = None
 
 

@@ -12,7 +12,7 @@ def client():
 
 def test_job_lookup_without_tenant_bucket(client):
     create_resp = client.post(
-        "/v1/commands",
+        "/v1/orchestrate",
         json={
             "tenant_id": "t1",
             "request_type": "OCR",

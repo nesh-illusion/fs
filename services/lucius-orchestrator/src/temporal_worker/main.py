@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 from dataclasses import dataclass
 from datetime import timedelta
@@ -11,11 +10,10 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 
-ORCHESTRATOR_URL = os.getenv("LUCIUS_ORCHESTRATOR_URL", "http://lucius-orchestrator:8000").rstrip("/")
+INVOKER_URL = os.getenv("LUCIUS_INVOKER_URL", "http://lucius-invoker:8001").rstrip("/")
 TEMPORAL_ADDRESS = os.getenv("LUCIUS_TEMPORAL_ADDRESS", "localhost:7233")
 TEMPORAL_NAMESPACE = os.getenv("LUCIUS_TEMPORAL_NAMESPACE", "default")
 TEMPORAL_TASK_QUEUE = os.getenv("LUCIUS_TEMPORAL_TASK_QUEUE", "lucius")
-SERVICEBUS_CONNECTION = os.getenv("LUCIUS_SERVICEBUS_CONNECTION")
 
 MAX_ATTEMPTS = int(os.getenv("LUCIUS_MAX_ATTEMPTS", "3"))
 LEASE_MINUTES = int(os.getenv("LUCIUS_LEASE_MINUTES", "15"))
@@ -33,7 +31,7 @@ class StepResult:
 
 @activity.defn
 async def record_attempt_lease(payload: Dict[str, Any]) -> None:
-    url = f"{ORCHESTRATOR_URL}/v1/internal/steps/attempt"
+    url = f"{INVOKER_URL}/v1/internal/steps/attempt"
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(url, json=payload)
         if response.status_code >= 300:
@@ -42,23 +40,11 @@ async def record_attempt_lease(payload: Dict[str, Any]) -> None:
 
 @activity.defn
 async def publish_to_bus(payload: Dict[str, Any]) -> None:
-    if not SERVICEBUS_CONNECTION:
-        raise RuntimeError("LUCIUS_SERVICEBUS_CONNECTION not set")
-    try:
-        from azure.servicebus.aio import ServiceBusClient
-        from azure.servicebus import ServiceBusMessage
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise RuntimeError("azure-servicebus dependency is not installed") from exc
-
-    directive = payload["directive"]
-    lane = payload["lane"]
-    topic = f"global-bus-p{lane}"
-    message = ServiceBusMessage(json.dumps(directive))
-    message.message_id = f"{directive['jobId']}:{directive['stepId']}:{directive['attempt_no']}"
-    async with ServiceBusClient.from_connection_string(SERVICEBUS_CONNECTION) as client:
-        sender = client.get_topic_sender(topic_name=topic)
-        async with sender:
-            await sender.send_messages(message)
+    url = f"{INVOKER_URL}/v1/internal/publish"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(url, json=payload)
+        if response.status_code >= 300:
+            raise RuntimeError(f"publish_to_bus failed: {response.status_code} {response.text}")
 
 
 @workflow.defn
@@ -68,6 +54,7 @@ class LuciusWorkflow:
         self._current_attempt_no: Optional[int] = None
         self._current_lease_id: Optional[str] = None
         self._pending_result: Optional[StepResult] = None
+        self._paused: bool = False
 
     @workflow.run
     async def run(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -78,13 +65,14 @@ class LuciusWorkflow:
         lane = payload["lane"]
         routing_key_used = payload["routing_key_used"]
         mode = payload["mode"]
-        callback_urls = payload.get("callback_urls", {})
         correlation_id = payload.get("correlation_id")
         traceparent = payload.get("traceparent")
 
         for step in steps:
             attempt_no = 0
             while True:
+                if self._paused:
+                    await workflow.wait_condition(lambda: not self._paused)
                 attempt_no += 1
                 lease_id = workflow.uuid4().hex
                 lease_expires_at = (workflow.now() + timedelta(minutes=LEASE_MINUTES)).isoformat()
@@ -114,7 +102,6 @@ class LuciusWorkflow:
                     "workspace_ref": step["workspace_ref"],
                     "output_ref": step["output_ref"],
                     "payload": step["payload"],
-                    "callback_urls": callback_urls,
                     "mode": mode,
                     "lane": lane,
                     "routing_key_used": routing_key_used,
@@ -173,6 +160,14 @@ class LuciusWorkflow:
             lease_id=payload.get("lease_id", ""),
             error=payload.get("error"),
         )
+
+    @workflow.signal
+    def pause(self, payload: Dict[str, Any]) -> None:
+        self._paused = True
+
+    @workflow.signal
+    def resume(self, payload: Dict[str, Any]) -> None:
+        self._paused = False
 
 
 async def _run_worker() -> None:

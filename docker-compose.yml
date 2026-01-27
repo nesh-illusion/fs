@@ -19,6 +19,7 @@ services:
       SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
       SERVICEBUS_TOPIC: "global-bus-p0"
       SERVICEBUS_SUBSCRIPTION: "vector-ingestion"
+      SERVICEBUS_REPLY_PREFIX: "global-bus-replies-p"
 
   distributed-ocr:
     build:
@@ -28,6 +29,7 @@ services:
       SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
       SERVICEBUS_TOPIC: "global-bus-p0"
       SERVICEBUS_SUBSCRIPTION: "distributed-ocr"
+      SERVICEBUS_REPLY_PREFIX: "global-bus-replies-p"
 
   semantic-intelligence:
     build:
@@ -37,6 +39,7 @@ services:
       SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
       SERVICEBUS_TOPIC: "global-bus-p0"
       SERVICEBUS_SUBSCRIPTION: "semantic-intelligence"
+      SERVICEBUS_REPLY_PREFIX: "global-bus-replies-p"
 
   lucius-temporal-worker:
     build:
@@ -44,16 +47,36 @@ services:
       dockerfile: services/lucius-orchestrator/Dockerfile
     command: ["python", "-m", "temporal_worker.main"]
     environment:
-      LUCIUS_SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
       LUCIUS_TEMPORAL_ADDRESS: "temporal:7233"
       LUCIUS_TEMPORAL_NAMESPACE: "default"
       LUCIUS_TEMPORAL_TASK_QUEUE: "lucius"
-      LUCIUS_ORCHESTRATOR_URL: "http://lucius-orchestrator:8000"
+      LUCIUS_INVOKER_URL: "http://lucius-invoker:8001"
       LUCIUS_STEP_RESULT_TIMEOUT_SECONDS: "900"
       LUCIUS_MAX_ATTEMPTS: "3"
       LUCIUS_LEASE_MINUTES: "15"
     depends_on:
       - lucius-orchestrator
+      - lucius-invoker
+      - temporal
+
+  lucius-invoker:
+    build:
+      context: .
+      dockerfile: services/lucius-orchestrator/Dockerfile
+    command: ["uvicorn", "invoker.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "8001:8001"
+    environment:
+      LUCIUS_SERVICEBUS_CONNECTION: "Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=..."
+      LUCIUS_SERVICEBUS_REPLY_PREFIX: "global-bus-replies-p"
+      LUCIUS_SERVICEBUS_REPLY_SUBSCRIPTION: "lucius-invoker"
+      LUCIUS_TABLE_CONNECTION: "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
+      LUCIUS_LEDGER_TABLE: "job-ledger"
+      LUCIUS_INFLIGHT_TABLE: "tenant-inflight"
+      LUCIUS_TEMPORAL_ADDRESS: "temporal:7233"
+      LUCIUS_TEMPORAL_NAMESPACE: "default"
+      LUCIUS_TEMPORAL_TASK_QUEUE: "lucius"
+    depends_on:
       - temporal
 
   temporal-postgres:

@@ -17,8 +17,6 @@ Work completed:
 - Contract schemas:
   - services/lucius-orchestrator/src/contracts/command-envelope.v1.schema.json
   - services/lucius-orchestrator/src/contracts/directive.v1.schema.json
-  - services/lucius-orchestrator/src/contracts/ack.v1.schema.json
-  - services/lucius-orchestrator/src/contracts/result.v1.schema.json
 - Protocol registry:
   - services/lucius-orchestrator/src/protocols/protocol-registry.v1.schema.json
   - services/lucius-orchestrator/src/protocols/protocol-registry.v1.example.json

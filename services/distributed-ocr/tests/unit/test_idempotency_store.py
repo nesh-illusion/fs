@@ -14,11 +14,11 @@ def _directive() -> Directive:
         step_type="OCR",
         attempt_no=1,
         lease_id="lease1",
+        lane=0,
         input_ref="in",
         workspace_ref=None,
         output_ref="out",
         payload={},
-        callback_urls={},
     )
 
 

@@ -158,7 +158,7 @@ def create_app() -> FastAPI:
     app.state.registry = registry
     app.state.validator = validator
 
-    @app.post("/v1/commands")
+    @app.post("/v1/orchestrate")
     async def create_command(envelope: Dict[str, Any]):
         log_event(
             logger,
@@ -248,6 +248,7 @@ def create_app() -> FastAPI:
                 error_message=None,
                 correlation_id=envelope.get("correlation_id"),
                 traceparent=envelope.get("traceparent"),
+                final_output=None,
             )
             job = jobs_store.create_job(job)
 
@@ -322,7 +323,6 @@ def create_app() -> FastAPI:
                 "lane": routing["lane"],
                 "routing_key_used": routing["routing_key_used"],
                 "mode": routing["resolved_mode"],
-                "callback_urls": envelope.get("callback_urls", {}),
                 "correlation_id": envelope.get("correlation_id"),
                 "traceparent": envelope.get("traceparent"),
             }
@@ -349,229 +349,6 @@ def create_app() -> FastAPI:
         except Exception:
             inflight_store.release(tenant_id)
             raise
-
-    @app.post("/v1/callbacks/ack")
-    async def ack_callback(payload: Dict[str, Any]):
-        log_event(
-            logger,
-            "callback.ack.received",
-            job_id=payload.get("jobId"),
-            step_id=payload.get("stepId"),
-            tenant_id=payload.get("tenant_id"),
-            attempt_no=payload.get("attempt_no"),
-            lease_id=payload.get("lease_id"),
-        )
-        job_id = payload.get("jobId")
-        step_id = payload.get("stepId")
-        tenant_id = payload.get("tenant_id")
-        attempt_no = payload.get("attempt_no")
-        lease_id = payload.get("lease_id")
-        if not all([job_id, step_id, tenant_id, attempt_no, lease_id]):
-            raise HTTPException(status_code=400, detail="missing required fields")
-
-        index = job_index_store.get(job_id)
-        if index is None or index.tenant_id != tenant_id:
-            raise HTTPException(status_code=404, detail="job not found")
-        job = jobs_store.get_job(job_id, tenant_id, index.tenant_bucket)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job not found")
-
-        step = _find_step(steps_store.get_steps(job_id), step_id)
-        if step is None:
-            raise HTTPException(status_code=404, detail="step not found")
-        if step.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
-            log_event(
-                logger,
-                "callback.ack.ignored",
-                job_id=job_id,
-                step_id=step_id,
-                tenant_id=tenant_id,
-                reason="terminal_step",
-            )
-            return {"status": "ignored"}
-        if step.attempt_no != attempt_no or step.lease_id != lease_id:
-            log_event(
-                logger,
-                "callback.ack.ignored",
-                job_id=job_id,
-                step_id=step_id,
-                tenant_id=tenant_id,
-                reason="attempt_lease_mismatch",
-            )
-            return {"status": "ignored"}
-        if step.state not in {"INITIATED", "PROCESSING", "IN_PROGRESS"}:
-            log_event(
-                logger,
-                "callback.ack.ignored",
-                job_id=job_id,
-                step_id=step_id,
-                tenant_id=tenant_id,
-                reason="invalid_step_state",
-            )
-            return {"status": "ignored"}
-
-        if step.state == "INITIATED":
-            step.state = "PROCESSING"
-            step.updated_at = _now_iso()
-            steps_store.update_step(step, step.etag or "")
-
-        if job.state in {"QUEUED"}:
-            job.state = "IN_PROGRESS"
-            job.updated_at = _now_iso()
-            jobs_store.update_job(job, job.etag or "")
-
-        if settings.temporal_enabled:
-            temporal_client = app.state.temporal_client
-            if temporal_client is None:
-                raise HTTPException(status_code=500, detail="temporal client not available")
-            await temporal_client.signal_workflow(
-                job_id,
-                "step_ack",
-                {
-                    "jobId": job_id,
-                    "stepId": step_id,
-                    "attempt_no": attempt_no,
-                    "lease_id": lease_id,
-                },
-            )
-
-        log_event(
-            logger,
-            "callback.ack.accepted",
-            job_id=job_id,
-            step_id=step_id,
-            tenant_id=tenant_id,
-            attempt_no=attempt_no,
-        )
-        return {"status": "ok"}
-
-    @app.post("/v1/callbacks/result")
-    async def result_callback(payload: Dict[str, Any]):
-        log_event(
-            logger,
-            "callback.result.received",
-            job_id=payload.get("jobId"),
-            step_id=payload.get("stepId"),
-            tenant_id=payload.get("tenant_id"),
-            attempt_no=payload.get("attempt_no"),
-            lease_id=payload.get("lease_id"),
-            status=payload.get("status"),
-        )
-        job_id = payload.get("jobId")
-        step_id = payload.get("stepId")
-        tenant_id = payload.get("tenant_id")
-        attempt_no = payload.get("attempt_no")
-        lease_id = payload.get("lease_id")
-        status = payload.get("status")
-        failure_class = payload.get("failure_class")
-        error = payload.get("error") or {}
-        if not all([job_id, step_id, tenant_id, attempt_no, lease_id, status]):
-            raise HTTPException(status_code=400, detail="missing required fields")
-
-        index = job_index_store.get(job_id)
-        if index is None or index.tenant_id != tenant_id:
-            raise HTTPException(status_code=404, detail="job not found")
-        job = jobs_store.get_job(job_id, tenant_id, index.tenant_bucket)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job not found")
-
-        steps = steps_store.get_steps(job_id)
-        step = _find_step(steps, step_id)
-        if step is None:
-            raise HTTPException(status_code=404, detail="step not found")
-        if step.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
-            log_event(
-                logger,
-                "callback.result.ignored",
-                job_id=job_id,
-                step_id=step_id,
-                tenant_id=tenant_id,
-                reason="terminal_step",
-            )
-            return {"status": "ignored"}
-        if step.attempt_no != attempt_no or step.lease_id != lease_id:
-            log_event(
-                logger,
-                "callback.result.ignored",
-                job_id=job_id,
-                step_id=step_id,
-                tenant_id=tenant_id,
-                reason="attempt_lease_mismatch",
-            )
-            return {"status": "ignored"}
-        if step.state not in {"INITIATED", "PROCESSING", "IN_PROGRESS"}:
-            log_event(
-                logger,
-                "callback.result.ignored",
-                job_id=job_id,
-                step_id=step_id,
-                tenant_id=tenant_id,
-                reason="invalid_step_state",
-            )
-            return {"status": "ignored"}
-
-        now = _now_iso()
-        step.updated_at = now
-        if status == "SUCCEEDED":
-            step.state = "SUCCEEDED"
-            step.completed_at = now
-        elif status == "FAILED" and failure_class == "RETRYABLE":
-            step.state = "FAILED_RETRY"
-        else:
-            step.state = "FAILED_FINAL"
-        step.last_error_code = error.get("code")
-        step.last_error_message = error.get("message")
-        steps_store.update_step(step, step.etag or "")
-
-        if step.state == "SUCCEEDED" and step.step_index == len(steps) - 1:
-            job.state = "SUCCEEDED"
-            job.updated_at = now
-            job.completed_at = now
-            jobs_store.update_job(job, job.etag or "")
-            inflight_store.release(job.tenant_id)
-        elif step.state == "FAILED_FINAL":
-            job.state = "FAILED_FINAL"
-            job.updated_at = now
-            job.completed_at = now
-            job.error_code = step.last_error_code
-            job.error_message = step.last_error_message
-            jobs_store.update_job(job, job.etag or "")
-            inflight_store.release(job.tenant_id)
-
-        temporal_status = step.state
-        if step.state == "FAILED_RETRY":
-            temporal_status = "FAILED_RETRY"
-        elif step.state == "FAILED_FINAL":
-            temporal_status = "FAILED_FINAL"
-        elif step.state == "SUCCEEDED":
-            temporal_status = "SUCCEEDED"
-
-        if settings.temporal_enabled:
-            temporal_client = app.state.temporal_client
-            if temporal_client is None:
-                raise HTTPException(status_code=500, detail="temporal client not available")
-            await temporal_client.signal_workflow(
-                job_id,
-                "step_result",
-                {
-                    "jobId": job_id,
-                    "stepId": step_id,
-                    "status": temporal_status,
-                    "attempt_no": attempt_no,
-                    "lease_id": lease_id,
-                    "error": error,
-                },
-            )
-
-        log_event(
-            logger,
-            "callback.result.accepted",
-            job_id=job_id,
-            step_id=step_id,
-            tenant_id=tenant_id,
-            status=step.state,
-        )
-        return {"status": "ok"}
 
     @app.post("/v1/internal/steps/attempt")
     async def record_attempt(payload: Dict[str, Any]):
@@ -655,5 +432,51 @@ def create_app() -> FastAPI:
         job.state = "CANCELLING"
         job.updated_at = _now_iso()
         return jobs_store.update_job(job, job.etag or "")
+
+    @app.post("/v1/jobs/{job_id}:pause")
+    async def pause_job(job_id: str, tenant_id: str, tenant_bucket: str | None = None):
+        if tenant_bucket is None:
+            index = job_index_store.get(job_id)
+            if index is None or index.tenant_id != tenant_id:
+                raise HTTPException(status_code=404, detail="job not found")
+            tenant_bucket = index.tenant_bucket
+        job = jobs_store.get_job(job_id, tenant_id, tenant_bucket)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        if job.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
+            return job
+        if job.state != "PAUSED":
+            job.state = "PAUSED"
+            job.updated_at = _now_iso()
+            job = jobs_store.update_job(job, job.etag or "")
+        if settings.temporal_enabled:
+            temporal_client = app.state.temporal_client
+            if temporal_client is None:
+                raise HTTPException(status_code=500, detail="temporal client not available")
+            await temporal_client.signal_workflow(job_id, "pause", {})
+        return job
+
+    @app.post("/v1/jobs/{job_id}:resume")
+    async def resume_job(job_id: str, tenant_id: str, tenant_bucket: str | None = None):
+        if tenant_bucket is None:
+            index = job_index_store.get(job_id)
+            if index is None or index.tenant_id != tenant_id:
+                raise HTTPException(status_code=404, detail="job not found")
+            tenant_bucket = index.tenant_bucket
+        job = jobs_store.get_job(job_id, tenant_id, tenant_bucket)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        if job.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
+            return job
+        if job.state == "PAUSED":
+            job.state = "IN_PROGRESS"
+            job.updated_at = _now_iso()
+            job = jobs_store.update_job(job, job.etag or "")
+        if settings.temporal_enabled:
+            temporal_client = app.state.temporal_client
+            if temporal_client is None:
+                raise HTTPException(status_code=500, detail="temporal client not available")
+            await temporal_client.signal_workflow(job_id, "resume", {})
+        return job
 
     return app

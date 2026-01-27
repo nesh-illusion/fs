@@ -25,6 +25,7 @@ def _job_entity(job: Job) -> Dict[str, Any]:
     return {
         "PartitionKey": job.tenant_bucket,
         "RowKey": job.job_id,
+        "job_id": job.job_id,
         "tenant_id": job.tenant_id,
         "tenant_bucket": job.tenant_bucket,
         "request_type": job.request_type,
@@ -44,12 +45,13 @@ def _job_entity(job: Job) -> Dict[str, Any]:
         "error_message": job.error_message,
         "correlation_id": job.correlation_id,
         "traceparent": job.traceparent,
+        "final_output": job.final_output,
     }
 
 
 def _job_from_entity(entity: Dict[str, Any]) -> Job:
     return Job(
-        job_id=entity["RowKey"],
+        job_id=entity.get("job_id", entity.get("RowKey")),
         tenant_id=entity["tenant_id"],
         tenant_bucket=entity.get("tenant_bucket", entity["PartitionKey"]),
         request_type=entity["request_type"],
@@ -69,6 +71,7 @@ def _job_from_entity(entity: Dict[str, Any]) -> Job:
         error_message=entity.get("error_message"),
         correlation_id=entity.get("correlation_id"),
         traceparent=entity.get("traceparent"),
+        final_output=entity.get("final_output"),
         etag=entity.get("etag") or entity.get("odata.etag"),
     )
 

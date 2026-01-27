@@ -18,15 +18,11 @@ def _base_payload(tenant_id: str, input_ref: str) -> dict:
         "output_ref": "out",
         "payload": {},
         "schema_version": "v1",
-        "callback_urls": {
-            "ack": "http://testserver/v1/callbacks/ack",
-            "result": "http://testserver/v1/callbacks/result",
-        },
     }
 
 
 def _create_command(client: TestClient, payload: dict) -> str:
-    response = client.post("/v1/commands", json=payload)
+    response = client.post("/v1/orchestrate", json=payload)
     assert response.status_code == 202
     return response.json()["jobId"]
 
@@ -50,29 +46,20 @@ def _start_step(client: TestClient, app, job_id: str, tenant_id: str):
     return step.step_id, lease_id
 
 
-def _complete_job(client: TestClient, job_id: str, step_id: str, tenant_id: str, lease_id: str) -> None:
-    ack_payload = {
-        "jobId": job_id,
-        "stepId": step_id,
-        "tenant_id": tenant_id,
-        "attempt_no": 1,
-        "lease_id": lease_id,
-        "status": "ACKED",
-        "timestamp": _now_iso(),
-    }
-    result_payload = {
-        "jobId": job_id,
-        "stepId": step_id,
-        "tenant_id": tenant_id,
-        "attempt_no": 1,
-        "lease_id": lease_id,
-        "status": "SUCCEEDED",
-        "timestamp": _now_iso(),
-    }
-    ack_response = client.post("/v1/callbacks/ack", json=ack_payload)
-    assert ack_response.status_code == 200
-    result_response = client.post("/v1/callbacks/result", json=result_payload)
-    assert result_response.status_code == 200
+def _complete_job(app, job_id: str, tenant_id: str, step_id: str) -> None:
+    job = app.state.jobs_store.get_job(job_id, tenant_id, app.state.job_index_store.get(job_id).tenant_bucket)
+    steps = app.state.steps_store.get_steps(job_id)
+    step = next(step for step in steps if step.step_id == step_id)
+    now = _now_iso()
+    step.state = "SUCCEEDED"
+    step.completed_at = now
+    step.updated_at = now
+    app.state.steps_store.update_step(step, step.etag or "")
+    job.state = "SUCCEEDED"
+    job.completed_at = now
+    job.updated_at = now
+    app.state.jobs_store.update_job(job, job.etag or "")
+    app.state.inflight_store.release(job.tenant_id)
 
 
 def test_inflight_limit_enforced(monkeypatch):
@@ -81,11 +68,11 @@ def test_inflight_limit_enforced(monkeypatch):
     client = TestClient(app)
 
     job1 = _create_command(client, _base_payload("t1", "in-1"))
-    response = client.post("/v1/commands", json=_base_payload("t1", "in-2"))
+    response = client.post("/v1/orchestrate", json=_base_payload("t1", "in-2"))
     assert response.status_code == 429
 
     step_id, lease_id = _start_step(client, app, job1, "t1")
-    _complete_job(client, job1, step_id, "t1", lease_id)
+    _complete_job(app, job1, "t1", step_id)
 
     job3 = _create_command(client, _base_payload("t1", "in-3"))
     assert job3

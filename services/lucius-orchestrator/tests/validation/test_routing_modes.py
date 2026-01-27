@@ -6,7 +6,7 @@ from api.app import create_app
 
 
 def _create_command(client: TestClient, payload: dict) -> str:
-    response = client.post("/v1/commands", json=payload)
+    response = client.post("/v1/orchestrate", json=payload)
     assert response.status_code == 202
     return response.json()["jobId"]
 
