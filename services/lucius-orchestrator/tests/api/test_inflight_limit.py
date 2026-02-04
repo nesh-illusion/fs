@@ -27,22 +27,27 @@ def _create_command(client: TestClient, payload: dict) -> str:
     return response.json()["jobId"]
 
 
-def _start_step(client: TestClient, app, job_id: str, tenant_id: str):
+def _start_step(app, job_id: str, tenant_id: str):
+    # Invoker-owned updates: simulate the attempt/lease record directly in the store.
     steps = app.state.steps_store.get_steps(job_id)
     step = steps[0]
     lease_id = uuid4().hex
-    response = client.post(
-        "/v1/internal/steps/attempt",
-        json={
-            "jobId": job_id,
-            "stepId": step.step_id,
-            "tenant_id": tenant_id,
-            "attempt_no": 1,
-            "lease_id": lease_id,
-            "lease_expires_at": _now_iso(),
-        },
+    now = _now_iso()
+    step.attempt_no = 1
+    step.lease_id = lease_id
+    step.lease_expires_at = now
+    step.state = "INITIATED"
+    step.updated_at = now
+    app.state.steps_store.update_step(step, step.etag or "")
+
+    job = app.state.jobs_store.get_job(
+        job_id, tenant_id, app.state.job_index_store.get(job_id).tenant_bucket
     )
-    assert response.status_code == 200
+    job.current_step_id = step.step_id
+    job.current_step_index = step.step_index
+    job.attempts_total = (job.attempts_total or 0) + 1
+    job.updated_at = now
+    app.state.jobs_store.update_job(job, job.etag or "")
     return step.step_id, lease_id
 
 
@@ -71,7 +76,7 @@ def test_inflight_limit_enforced(monkeypatch):
     response = client.post("/v1/orchestrate", json=_base_payload("t1", "in-2"))
     assert response.status_code == 429
 
-    step_id, lease_id = _start_step(client, app, job1, "t1")
+    step_id, lease_id = _start_step(app, job1, "t1")
     _complete_job(app, job1, "t1", step_id)
 
     job3 = _create_command(client, _base_payload("t1", "in-3"))

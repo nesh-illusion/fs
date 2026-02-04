@@ -26,6 +26,8 @@ FastAPI service that validates command requests, creates jobs/steps, starts Temp
 7) Temporal worker records attempt/lease and publishes directive via lucius-invoker.
 8) lucius-invoker updates ledger on ACK/RESULT bus messages and signals Temporal.
 
+Note: After creation, the orchestrator does not mutate ledger state; invoker is the sole writer. Pause/resume/cancel only signal Temporal when enabled.
+
 ## Configuration
 Required/optional environment variables:
 - `LUCIUS_STORAGE_BACKEND=memory|table|ledger`

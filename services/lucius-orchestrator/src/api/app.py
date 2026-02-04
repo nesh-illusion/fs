@@ -190,9 +190,9 @@ def create_app() -> FastAPI:
             "schema_version": envelope["schema_version"],
         }
         digest = idempotency_hash(idempotency_payload)
-        existing_job_id = jobs_store.find_by_idempotency(envelope["tenant_id"], digest)
-        if existing_job_id:
-            return JSONResponse(status_code=202, content={"jobId": existing_job_id})
+        existing_record = idempotency_store.get(envelope["tenant_id"], digest)
+        if existing_record is not None:
+            return JSONResponse(status_code=202, content={"jobId": existing_record.job_id})
 
         payload = envelope["payload"]
         step_schema_map = {step.step_id: step.payload_schema_ref for step in protocol.steps}
@@ -350,50 +350,6 @@ def create_app() -> FastAPI:
             inflight_store.release(tenant_id)
             raise
 
-    @app.post("/v1/internal/steps/attempt")
-    async def record_attempt(payload: Dict[str, Any]):
-        job_id = payload.get("jobId")
-        step_id = payload.get("stepId")
-        tenant_id = payload.get("tenant_id")
-        attempt_no = payload.get("attempt_no")
-        lease_id = payload.get("lease_id")
-        lease_expires_at = payload.get("lease_expires_at") or _lease_expires_at()
-        if not all([job_id, step_id, tenant_id, attempt_no, lease_id]):
-            raise HTTPException(status_code=400, detail="missing required fields")
-
-        index = job_index_store.get(job_id)
-        if index is None or index.tenant_id != tenant_id:
-            raise HTTPException(status_code=404, detail="job not found")
-        job = jobs_store.get_job(job_id, tenant_id, index.tenant_bucket)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job not found")
-        if job.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
-            raise HTTPException(status_code=409, detail="job is in terminal state")
-
-        steps = steps_store.get_steps(job_id)
-        step = _find_step(steps, step_id)
-        if step is None:
-            raise HTTPException(status_code=404, detail="step not found")
-        if step.state in {"SUCCEEDED", "FAILED_FINAL"}:
-            raise HTTPException(status_code=409, detail="step is in terminal state")
-        if step.attempt_no == attempt_no and step.lease_id == lease_id:
-            return {"status": "ok"}
-
-        now = _now_iso()
-        step.attempt_no = attempt_no
-        step.lease_id = lease_id
-        step.lease_expires_at = lease_expires_at
-        step.state = "INITIATED"
-        step.updated_at = now
-        steps_store.update_step(step, step.etag or "")
-
-        job.current_step_id = step.step_id
-        job.current_step_index = step.step_index
-        job.attempts_total = (job.attempts_total or 0) + 1
-        job.updated_at = now
-        jobs_store.update_job(job, job.etag or "")
-        return {"status": "ok"}
-
     @app.get("/v1/jobs/{job_id}")
     async def get_job(job_id: str, tenant_id: str, tenant_bucket: str | None = None):
         if tenant_bucket is None:
@@ -427,11 +383,12 @@ def create_app() -> FastAPI:
         job = jobs_store.get_job(job_id, tenant_id, tenant_bucket)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        if job.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
-            return job
-        job.state = "CANCELLING"
-        job.updated_at = _now_iso()
-        return jobs_store.update_job(job, job.etag or "")
+        if settings.temporal_enabled:
+            temporal_client = app.state.temporal_client
+            if temporal_client is None:
+                raise HTTPException(status_code=500, detail="temporal client not available")
+            await temporal_client.cancel_workflow(job_id)
+        return job
 
     @app.post("/v1/jobs/{job_id}:pause")
     async def pause_job(job_id: str, tenant_id: str, tenant_bucket: str | None = None):
@@ -443,12 +400,6 @@ def create_app() -> FastAPI:
         job = jobs_store.get_job(job_id, tenant_id, tenant_bucket)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        if job.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
-            return job
-        if job.state != "PAUSED":
-            job.state = "PAUSED"
-            job.updated_at = _now_iso()
-            job = jobs_store.update_job(job, job.etag or "")
         if settings.temporal_enabled:
             temporal_client = app.state.temporal_client
             if temporal_client is None:
@@ -466,12 +417,6 @@ def create_app() -> FastAPI:
         job = jobs_store.get_job(job_id, tenant_id, tenant_bucket)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        if job.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
-            return job
-        if job.state == "PAUSED":
-            job.state = "IN_PROGRESS"
-            job.updated_at = _now_iso()
-            job = jobs_store.update_job(job, job.etag or "")
         if settings.temporal_enabled:
             temporal_client = app.state.temporal_client
             if temporal_client is None:

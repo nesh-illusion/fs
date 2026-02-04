@@ -91,6 +91,7 @@ class LuciusWorkflow:
                 )
 
                 directive = {
+                    "type": "DIRECTIVE",
                     "jobId": job_id,
                     "tenant_id": tenant_id,
                     "stepId": step["step_id"],

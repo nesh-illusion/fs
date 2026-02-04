@@ -98,10 +98,24 @@ async def _handle_ack(app: FastAPI, payload: Dict[str, Any]) -> None:
         return
 
     if step.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
+        logger.info("ack.terminal_step", extra={"job_id": job_id, "step_id": step_id})
         return
     if step.attempt_no != attempt_no or step.lease_id != lease_id:
+        logger.info(
+            "ack.stale_attempt",
+            extra={
+                "job_id": job_id,
+                "step_id": step_id,
+                "attempt_no": attempt_no,
+                "lease_id": lease_id,
+            },
+        )
         return
     if step.state not in {"INITIATED", "PROCESSING", "IN_PROGRESS"}:
+        logger.info(
+            "ack.invalid_state",
+            extra={"job_id": job_id, "step_id": step_id, "state": step.state},
+        )
         return
 
     if step.state == "INITIATED":
@@ -157,10 +171,24 @@ async def _handle_result(app: FastAPI, payload: Dict[str, Any]) -> None:
         return
 
     if step.state in {"SUCCEEDED", "FAILED_FINAL", "CANCELLED"}:
+        logger.info("result.terminal_step", extra={"job_id": job_id, "step_id": step_id})
         return
     if step.attempt_no != attempt_no or step.lease_id != lease_id:
+        logger.info(
+            "result.stale_attempt",
+            extra={
+                "job_id": job_id,
+                "step_id": step_id,
+                "attempt_no": attempt_no,
+                "lease_id": lease_id,
+            },
+        )
         return
     if step.state not in {"INITIATED", "PROCESSING", "IN_PROGRESS"}:
+        logger.info(
+            "result.invalid_state",
+            extra={"job_id": job_id, "step_id": step_id, "state": step.state},
+        )
         return
 
     now = _now_iso()
